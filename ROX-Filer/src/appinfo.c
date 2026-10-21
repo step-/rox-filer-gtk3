@@ -1,6 +1,7 @@
 /*
  * ROX-Filer, filer for the ROX desktop project
  * Copyright (C) 2006, Thomas Leonard and others (see changelog for details).
+ * Copyright (C) 2026, step <step.commons@gmail.com>.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the Free
@@ -70,7 +71,7 @@
 XMLwrapper *appinfo_get(const gchar *app_dir, DirItem *item)
 {
 	XMLwrapper	*ai;
-	guchar	*tmp;
+	gchar	*tmp;
 
 	/* Is it even an application directory? */
 	if (item->base_type != TYPE_DIRECTORY ||

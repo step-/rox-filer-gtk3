@@ -1,6 +1,7 @@
 /*
  * ROX-Filer, filer for the ROX desktop project
  * Copyright (C) 2006, Thomas Leonard and others (see changelog for details).
+ * Copyright (C) 2026, step <step.commons@gmail.com>.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the Free
@@ -141,7 +142,7 @@ void mount_user_mount(const char *path)
  *
  * 'info' and 'parent' are both optional, saving one stat() each.
  */
-gboolean mount_is_mounted(const guchar *path, struct stat *info,
+gboolean mount_is_mounted(const gchar *path, struct stat *info,
 					      struct stat *parent)
 {
 	struct stat info_path, info_parent;
@@ -155,7 +156,7 @@ gboolean mount_is_mounted(const guchar *path, struct stat *info,
 
 	if (!parent)
 	{
-		guchar *tmp;
+		gchar *tmp;
 		parent = &info_parent;
 		tmp = g_strconcat(path, "/..", NULL);
 		if (stat(tmp, &info_parent))

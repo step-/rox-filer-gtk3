@@ -1,6 +1,7 @@
 /*
  * ROX-Filer, filer for the ROX desktop project
  * Copyright (C) 2006, Thomas Leonard and others (see changelog for details).
+ * Copyright (C) 2026, step <step.commons@gmail.com>.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the Free
@@ -33,11 +34,13 @@ static gpointer parent_class = NULL;
 static void wrapped_label_finialize(GObject *object);
 static void wrapped_label_class_init(gpointer gclass, gpointer data);
 static void wrapped_label_init(GTypeInstance *object, gpointer gclass);
-static void wrapped_label_size_request(GtkWidget *widget,
-				       GtkRequisition *requisition);
-static gint wrapped_label_expose(GtkWidget *widget, GdkEventExpose *event);
-static void wrapped_label_style_set(GtkWidget *widget,
-				    GtkStyle *previous_style);
+static void wrapped_label_get_preferred_width(GtkWidget *widget,
+					       gint *minimum_width,
+					       gint *natural_width);
+static void wrapped_label_get_preferred_height(GtkWidget *widget,
+						gint *minimum_height,
+						gint *natural_height);
+static gboolean wrapped_label_draw(GtkWidget *widget, cairo_t *cr);
 
 
 /****************************************************************
@@ -99,9 +102,9 @@ static void wrapped_label_class_init(gpointer gclass, gpointer data)
 
 	object->finalize = wrapped_label_finialize;
 
-	widget_class->size_request = wrapped_label_size_request;
-	widget_class->expose_event = wrapped_label_expose;
-	widget_class->style_set = wrapped_label_style_set;
+	widget_class->get_preferred_width = wrapped_label_get_preferred_width;
+	widget_class->get_preferred_height = wrapped_label_get_preferred_height;
+	widget_class->draw = wrapped_label_draw;
 }
 
 static void wrapped_label_init(GTypeInstance *object, gpointer gclass)
@@ -114,6 +117,16 @@ static void wrapped_label_init(GTypeInstance *object, gpointer gclass)
 	wl->layout = NULL;
 	wl->width = -1;
 	wl->text_width = -1;
+	/* Sensible defaults so the label is visible before the caller
+	 * sets explicit colors.  Black text on a transparent background. */
+	wl->fg_col.red = 0.0;
+	wl->fg_col.green = 0.0;
+	wl->fg_col.blue = 0.0;
+	wl->fg_col.alpha = 1.0;
+	wl->bg_col.red = 0.0;
+	wl->bg_col.green = 0.0;
+	wl->bg_col.blue = 0.0;
+	wl->bg_col.alpha = 0.0;
 }
 
 GType wrapped_label_get_type(void)
@@ -142,8 +155,9 @@ GType wrapped_label_get_type(void)
 	return type;
 }
 
-static void wrapped_label_size_request(GtkWidget *widget,
-				       GtkRequisition *requisition)
+static void wrapped_label_get_preferred_width(GtkWidget *widget,
+					       gint *minimum_width,
+					       gint *natural_width)
 {
 	PangoRectangle logical_rect;
 	WrappedLabel *wl = (WrappedLabel *) widget;
@@ -153,53 +167,82 @@ static void wrapped_label_size_request(GtkWidget *widget,
 	pango_layout_get_extents(wl->layout, NULL, &logical_rect);
 
 	wl->x_off = PANGO_PIXELS(logical_rect.x);
-	wl->y_off = PANGO_PIXELS(logical_rect.y);
 	wl->text_width = PANGO_PIXELS(logical_rect.width);
 
-	requisition->width = PANGO_PIXELS(logical_rect.width);
-	requisition->height = PANGO_PIXELS(logical_rect.height);
+	*minimum_width = PANGO_PIXELS(logical_rect.width);
+	*natural_width = PANGO_PIXELS(logical_rect.width);
 }
 
-static gint wrapped_label_expose(GtkWidget *widget, GdkEventExpose *event)
+static void wrapped_label_get_preferred_height(GtkWidget *widget,
+						gint *minimum_height,
+						gint *natural_height)
+{
+	PangoRectangle logical_rect;
+	WrappedLabel *wl = (WrappedLabel *) widget;
+
+	g_return_if_fail(wl->layout != NULL);
+
+	pango_layout_get_extents(wl->layout, NULL, &logical_rect);
+
+	wl->y_off = PANGO_PIXELS(logical_rect.y);
+
+	*minimum_height = PANGO_PIXELS(logical_rect.height);
+	*natural_height = PANGO_PIXELS(logical_rect.height);
+}
+
+static gboolean wrapped_label_draw(GtkWidget *widget, cairo_t *cr)
 {
 	WrappedLabel *wl = (WrappedLabel *) widget;
 	int x;
+	GtkAllocation alloc;
 
-	g_return_val_if_fail(event != NULL, TRUE);
-	g_return_val_if_fail(wl->layout != NULL, TRUE);
+	g_return_val_if_fail(wl->layout != NULL, FALSE);
 
-	x = widget->allocation.x -
-		((wl->text_width - widget->allocation.width) >> 1);
+	gtk_widget_get_allocation(widget, &alloc);
 
-	gtk_paint_layout(widget->style,
-			 widget->window,
-			 gtk_widget_get_state(widget),
-			 FALSE,
-			 NULL,		/* DON'T clip! */
-			 widget,
-			 "label",
-			 x - wl->x_off,
-			 widget->allocation.y - wl->y_off,
-			 wl->layout);
+	/* Paint the background with the stored color. */
+	gdk_cairo_set_source_rgba(cr, &wl->bg_col);
+	cairo_rectangle(cr, 0, 0, alloc.width, alloc.height);
+	cairo_fill(cr);
+
+	/* Set the cairo source to the foreground color before rendering. */
+	gdk_cairo_set_source_rgba(cr, &wl->fg_col);
+
+	/* Calculate X relative to the widget's local 0,0 origin. */
+	x = - ((wl->text_width - alloc.width) >> 1);
+
+	/* Move pen using only local offsets. */
+	cairo_move_to(cr, x - wl->x_off, - wl->y_off);
+	pango_cairo_show_layout(cr, wl->layout);
 
 	return FALSE;
 }
 
-static void wrapped_label_style_set(GtkWidget *widget,
-				    GtkStyle *previous_style)
+/*
+ * Set the foreground color used by WrappedLabel.  Installs a Pango
+ * foreground attribute on the underlying PangoLayout.  Must be called
+ * from the color-option handler (not from the draw handler) to avoid
+ * an infinite re-layout loop.
+ */
+void wrapped_label_set_fg_color(WrappedLabel *wl, const GdkRGBA *color)
 {
-	WrappedLabel *wl = (WrappedLabel *) widget;
+	PangoAttrList *attrs;
+	PangoAttribute *attr;
 
-	if (wl->layout)
-	{
-		const gchar *txt;
-		PangoLayout *old = wl->layout;
+	g_return_if_fail(wl != NULL);
+	g_return_if_fail(wl->layout != NULL);
+	g_return_if_fail(color != NULL);
 
-		txt = pango_layout_get_text(wl->layout);
+	wl->fg_col = *color;
 
-		wl->layout = NULL;
-		wrapped_label_set_text(wl, txt);
-
-		g_object_unref(old);
-	}
+	attrs = pango_attr_list_new();
+	attr = pango_attr_foreground_new(
+		(guint16)(color->red * 65535),
+		(guint16)(color->green * 65535),
+		(guint16)(color->blue * 65535));
+	attr->start_index = 0;
+	attr->end_index = -1;
+	pango_attr_list_insert(attrs, attr);
+	pango_layout_set_attributes(wl->layout, attrs);
+	pango_attr_list_unref(attrs);
 }

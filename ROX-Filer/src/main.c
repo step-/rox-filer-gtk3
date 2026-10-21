@@ -1,6 +1,7 @@
 /*
  * ROX-Filer, filer for the ROX desktop project
  * Copyright (C) 2006, Thomas Leonard and others (see changelog for details).
+ * Copyright (C) 2026, step <step.commons@gmail.com>.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the Free
@@ -75,6 +76,8 @@
 #include "xtypes.h"
 #include "bulk_rename.h"
 #include "gtksavebox.h"
+#include "view_utils.h"
+#include "css.h"
 
 int number_of_windows = 0;	/* Quit when this reaches 0 again... */
 int to_wakeup_pipe = -1;	/* Write here to get noticed */
@@ -91,8 +94,20 @@ const gchar *show_user_message = NULL;
 int home_dir_len;
 const char *home_dir, *app_dir;
 
+/* User-configurable project name for config isolation.
+ * Defaults to PROJECT. Override via --config CLI flag
+ * or ROX_FILER_CONFIG env var (CLI wins).
+ * The public const pointer is declared extern in global.h.
+ */
+const char *project_name = PROJECT;
+static gchar *opt_project_name = NULL;
+
+/* Initial view override for -V/--view-type (1=Icon,2=List) [20260731074216] */
+int opt_view_type = -1;
+
 #define COPYING								\
 	     N_("Copyright (C) 2005 Thomas Leonard.\n"			\
+		"Copyright (C) 2026 step <step.commons@gmail.com>.\n"	\
 		"ROX-Filer comes with ABSOLUTELY NO WARRANTY,\n"	\
 		"to the extent permitted by law.\n"			\
 		"You may redistribute copies of ROX-Filer\n"		\
@@ -116,7 +131,7 @@ const char *home_dir, *app_dir;
        "Open each directory or file listed, or the current working\n"	\
        "directory if no arguments are given.\n\n"			\
        "  -b, --border=PANEL	open PANEL as a border panel\n"	\
-       "  -B, --bottom=PANEL	open PAN as a bottom-edge panel\n"	\
+       "  -B, --bottom=PANEL	open PANEL as a bottom-edge panel\n"	\
        "  -c, --client-id=ID	used for session management\n"		\
        "  -d, --dir=DIR		open DIR as directory (not application)\n"  \
        "  -D, --close=DIR	close DIR and its subdirectories\n"     \
@@ -133,13 +148,25 @@ const char *home_dir, *app_dir;
        "  -u, --user		show user name in each window \n"	\
        "  -U, --url=URL		open file or directory in URI form\n"   \
        "  -v, --version		display the version information and exit\n"   \
+       "  -V, --view-type=N	initial view 1=Icon,2=List\n"	\
        "  -x, --examine=FILE	FILE has changed - re-examine it\n"	\
+       "  -z			Disable RPC handler - for use with -n\n"	\
+       "      --config=NAME	use NAME for config/SOAP RPC isolation\n" \
+       "      --dump-css	print internal CSS to stdout and exit\n"	\
+       "      --exit		close all windows of this configuration\n"	\
+       "      --exit-force	quit without prompting; quits a blocked --exit\n"	\
+       "      --options		open the Options dialog\n"			\
        "\nReport bugs to %s.\n"		\
        "Home page (including updated versions): http://rox.sourceforge.net/\n")
 
-#define SHORT_OPS "c:d:t:b:l:r:B:op:s:hvnux:m:D:RSU:"
+#define SHORT_OPS "c:d:t:b:l:r:B:op:s:hvnux:m:D:RSU:zV:"
 
 #ifdef HAVE_GETOPT_LONG
+enum {
+	OPT_DUMP_CSS = 256, OPT_PROJECT_NAME = 257,
+	OPT_SHOW_OPTIONS = 258, OPT_EXIT = 259, OPT_EXIT_FORCE = 260
+};
+
 static struct option long_opts[] =
 {
 	{"dir", 1, NULL, 'd'},
@@ -162,6 +189,12 @@ static struct option long_opts[] =
 	{"mime-type", 1, NULL, 'm'},
 	{"client-id", 1, NULL, 'c'},
 	{"url", 1, NULL, 'u'},
+	{"view-type", 1, NULL, 'V'},
+	{"dump-css", 0, NULL, OPT_DUMP_CSS},
+	{"options", 0, NULL, OPT_SHOW_OPTIONS},
+	{"exit", 0, NULL, OPT_EXIT},
+	{"exit-force", 0, NULL, OPT_EXIT_FORCE},
+	{"config", 1, NULL, OPT_PROJECT_NAME},
 	{NULL, 0, NULL, 0},
 };
 #endif
@@ -180,6 +213,7 @@ Option o_session_pinboard_name;
 
 /* Always start a new filer, even if one seems to be already running */
 gboolean new_copy = FALSE;
+gboolean disable_rpc = FALSE;
 
 /* Maps child PIDs to Callback pointers */
 static GHashTable *death_callbacks = NULL;
@@ -190,17 +224,19 @@ Option o_dnd_no_hostnames;
 /* Static prototypes */
 static void show_features(void);
 static void soap_add(xmlNodePtr body,
-			   xmlChar *function,
-			   const xmlChar *arg1_name, const xmlChar *arg1_value,
-			   const xmlChar *arg2_name, const xmlChar *arg2_value);
+			   const gchar *function,
+			   const gchar *arg1_name, const gchar *arg1_value,
+			   const gchar *arg2_name, const gchar *arg2_value);
 static void soap_reply(xmlDocPtr reply, gboolean rpc_mode);
 static void child_died(int signum);
 static void child_died_callback(void);
-static void wake_up_cb(gpointer data, gint source, GdkInputCondition condition);
+static gboolean wake_up_cb(GIOChannel *source, GIOCondition condition,
+			   gpointer user_data);
 static void xrandr_size_change(GdkScreen *screen, gpointer user_data);
 static void add_default_panel_and_pinboard(xmlNodePtr body);
-static GList *build_launch(Option *option, xmlNode *node, guchar *label);
-static GList *build_make_script(Option *option, xmlNode *node, guchar *label);
+static GList *build_launch(Option *option, xmlNode *node, gchar *label);
+static GList *build_make_script(Option *option, xmlNode *node, gchar *label);
+static GList *build_reload_css(Option *option, xmlNode *node, gchar *label);
 
 /****************************************************************
  *			EXTERNAL INTERFACE			*
@@ -258,7 +294,7 @@ int main(int argc, char **argv)
 	int		 wakeup_pipe[2];
 	int		 i;
 	struct sigaction act;
-	guchar		*tmp, *dir;
+	gchar		*tmp, *dir;
 	gchar *client_id = NULL, *base;
 	gboolean	show_user = FALSE;
 	gboolean	rpc_mode = FALSE;
@@ -283,6 +319,37 @@ int main(int argc, char **argv)
 	home_dir = g_get_home_dir();
 	home_dir_len = strlen(home_dir);
 	app_dir = g_strdup(getenv("APP_DIR"));
+
+	/* Check for project name override (config isolation).
+	 * CLI --config overrides env var. Must scan argv early because
+	 * choices_init() runs before the getopt_long loop.
+	 */
+	{
+		const char *env_name = g_getenv("ROX_FILER_CONFIG");
+		if (env_name && env_name[0])
+		{
+			opt_project_name = g_strdup(env_name);
+			project_name = opt_project_name;
+		}
+	}
+	{
+		int j;
+		for (j = 1; j < argc; j++)
+		{
+			const char *val = NULL;
+			if (g_str_has_prefix(argv[j], "--config="))
+				val = argv[j] + 9;
+			else if (j + 1 < argc && strcmp(argv[j], "--config") == 0)
+				val = argv[j + 1];
+			if (val && val[0])
+			{
+				g_free(opt_project_name);
+				opt_project_name = g_strdup(val);
+				project_name = opt_project_name;
+			}
+		}
+		g_setenv("ROX_FILER_CONFIG", project_name, TRUE);
+	}
 
 	/* Get internationalisation up and running. This requires the
 	 * choices system, to discover the user's preferred language.
@@ -344,6 +411,7 @@ int main(int argc, char **argv)
 			  "Default");
 	option_register_widget("launch", build_launch);
 	option_register_widget("make-script", build_make_script);
+	option_register_widget("reload-css", build_reload_css);
 
 #ifdef UNIT_TESTS
 	bulk_rename_tests();
@@ -356,25 +424,31 @@ int main(int argc, char **argv)
 	 */
 	rpc = soap_new(&body);
 
+	/* --dump-css: print internal CSS and exit.  No GTK needed. */
+	for (i = 1; i < argc; i++)
+	{
+		if (g_strcmp0(argv[i], "--dump-css") == 0)
+		{
+			/* Name the save location first. */
+			gchar *dir = choices_find_xdg_path_save(NULL,
+						project_name, SITE, FALSE);
+			if (dir)
+			{
+				g_print(_("/* Save this file as"
+					" %s/style.css */\n\n"), dir);
+				g_free(dir);
+			}
+			GString *css = css_build_internal(TRUE);
+			g_print("%s", css->str);
+			g_string_free(css, TRUE);
+			return EXIT_SUCCESS;
+		}
+	}
+
 	/* Note: must do this before checking our options,
 	 * otherwise we report an error for Gtk's options.
 	 */
 	gtk_init(&argc, &argv);
-	/* Set a default style for the collection widget */
-	gtk_rc_parse_string("style \"rox-default-collection-style\" {\n"
-		"  bg[NORMAL] = \"#f3f3f3\"\n"
-		"  fg[NORMAL] = \"#000000\"\n"
-		"  bg[INSENSITIVE] = \"#bfbfbf\"\n"
-		"  fg[INSENSITIVE] = \"#000000\"\n"
-		"}\n"
-		"style \"rox-default-pinboard-style\" {\n"
-		"  bg[NORMAL] = \"#666666\"\n"
-		"}\n"
-		"widget \"rox-pinboard\" style : gtk "
-		"\"rox-default-pinboard-style\"\n"
-
-		"class \"Collection\" style : gtk "
-		"\"rox-default-collection-style\"\n");
 
 	g_signal_connect(gdk_screen_get_default(), "size-changed",
 			 G_CALLBACK(xrandr_size_change), NULL);
@@ -489,6 +563,43 @@ int main(int argc, char **argv)
 			case 'c':
 				client_id = g_strdup(VALUE);
 				break;
+			case OPT_PROJECT_NAME:
+				g_free(opt_project_name);
+				opt_project_name = g_strdup(optarg);
+				project_name = opt_project_name;
+				g_setenv("ROX_FILER_CONFIG", project_name, TRUE);
+				break;
+			case OPT_SHOW_OPTIONS:
+				/* [20260914054021] Queued as SOAP so a running
+				 * copy handles it; also counts as an action,
+				 * suppressing the default OpenDir below.
+				 */
+				soap_add(body, "ShowOptions",
+						NULL, NULL, NULL, NULL);
+				break;
+			case OPT_EXIT:
+				soap_add(body, "Exit", NULL, NULL, NULL, NULL);
+				break;
+			case OPT_EXIT_FORCE:
+				soap_add(body, "Exit",
+						"Force", "yes", NULL, NULL);
+				break;
+			case 'V':
+			{
+				long v = strtol(VALUE, NULL, 10);
+
+				if (v != 1 && v != 2)
+				{
+					fprintf(stderr,
+						_("Invalid --view-type %s (1=Icon,2=List)\n"),
+						VALUE);
+					return EXIT_FAILURE;
+				}
+				opt_view_type = (v == 1 ?
+					VIEW_TYPE_COLLECTION : VIEW_TYPE_DETAILS);
+				break;
+			}
+
 			case 'R':
 				/* Reconnect stdin */
 				if(ofd0>-1) {
@@ -520,6 +631,10 @@ int main(int argc, char **argv)
 		        case 'U':
 				soap_add(body, "RunURI",
 						"URI", VALUE, NULL, NULL);
+				break;
+
+			case 'z':
+				disable_rpc = TRUE;
 				break;
 
 			default:
@@ -558,18 +673,129 @@ int main(int argc, char **argv)
 		/* The user didn't request any action. Open the current
 		 * directory.
 		 */
-		guchar	*dir;
+		gchar	*dir;
 
 		dir = g_get_current_dir();
 		soap_add(body, "OpenDir", "Filename", dir, NULL, NULL);
 		g_free(dir);
 	}
 
+	if (opt_view_type != -1 && body && body->xmlChildrenNode)
+	{
+		xmlNodePtr node;
+		xmlNs *rox_ns;
+		int dir_window_count = 0;
+		xmlNodePtr single_target = NULL;
+
+		/* [20260731074216] Count single directory-window ops; when -V
+		 * is used, restrictions apply to avoid test matrix explosion.
+		 */
+		for (node = body->xmlChildrenNode; node; node = node->next)
+		{
+			gboolean is_dir_window = FALSE;
+			const gchar *path = NULL;
+
+			if (node->type != XML_ELEMENT_NODE)
+				continue;
+			if (xmlStrEqual(node->name, BAD_CAST "OpenDir") ||
+				xmlStrEqual(node->name, BAD_CAST "Show"))
+			{
+				is_dir_window = TRUE;
+			}
+			else if (xmlStrEqual(node->name, BAD_CAST "Run") ||
+				xmlStrEqual(node->name, BAD_CAST "RunURI"))
+			{
+				xmlNodePtr child;
+
+				for (child = node->xmlChildrenNode; child;
+				     child = child->next)
+				{
+					if (child->type != XML_ELEMENT_NODE)
+						continue;
+					if (xmlStrEqual(child->name,
+							BAD_CAST "Filename") ||
+					    xmlStrEqual(child->name, BAD_CAST "URI"))
+					{
+						xmlChar *val;
+
+						val = xmlNodeGetContent(child);
+						if (val)
+						{
+							path = (const gchar *) val;
+							if (g_str_has_prefix(path, "file://"))
+								path += 7;
+							/* Quick test to see if directory and not AppDir.
+							 * Full AppDir rules in diritem.c:no_diricon */
+							if (g_file_test(path, G_FILE_TEST_IS_DIR))
+							{
+								gchar *app_run =
+								g_build_filename(path, "AppRun", NULL);
+								if (!g_file_test(app_run,
+									G_FILE_TEST_IS_EXECUTABLE))
+									is_dir_window = TRUE;
+								g_free(app_run);
+							}
+							xmlFree(val);
+						}
+						break;
+					}
+				}
+				/* Run on non-directory file or AppDir is not a directory window */
+			}
+			else
+			{
+				continue;
+			}
+			if (is_dir_window)
+			{
+				dir_window_count++;
+				single_target = node;
+			}
+		}
+		if (dir_window_count != 1)
+		{
+			const gchar *m =
+				_("--view-type 1=Icon,2=List is supported only with a single directory window.\n"
+				  "Use -d DIR, -s FILE, or a single directory path.\n");
+			fprintf(stderr, m);
+			delayed_error(m);
+			return EXIT_FAILURE;
+		}
+		/* Inject Details SOAP into the single directory-window node */
+		rox_ns = xmlSearchNsByHref(body->doc, body, ROX_NS);
+		{
+			xmlNodePtr child;
+			gboolean has_details = FALSE;
+
+			for (child = single_target->xmlChildrenNode; child;
+			     child = child->next)
+			{
+				if (child->type == XML_ELEMENT_NODE &&
+				    xmlStrEqual(child->name,
+						BAD_CAST "Details"))
+				{
+					has_details = TRUE;
+					break;
+				}
+			}
+			if (!has_details)
+			{
+				const gchar *view_str =
+					(opt_view_type == VIEW_TYPE_DETAILS)
+					? "ListView" : "None";
+
+				xmlNewTextChild(single_target, rox_ns,
+						BAD_CAST "Details",
+						BAD_CAST view_str);
+			}
+		}
+	}
+
 	option_add_int(&o_dnd_no_hostnames, "dnd_no_hostnames", 1);
 
 	/* Try to send the request to an already-running copy of the filer */
 	gui_support_init();
-	if (remote_init(rpc, new_copy)) {
+	if (remote_init(rpc, new_copy, disable_rpc)) {
 		xmlFreeDoc(rpc);	/* avoid memleak */
 		return EXIT_SUCCESS;	/* It worked - exit */
 	}
@@ -604,6 +830,7 @@ int main(int argc, char **argv)
 	filer_init();
 	toolbar_init();
 	display_init();
+	css_init();
 	mount_init();
 	type_init();
 	action_init();
@@ -618,8 +845,9 @@ int main(int argc, char **argv)
 	pipe(wakeup_pipe);
 	close_on_exec(wakeup_pipe[0], TRUE);
 	close_on_exec(wakeup_pipe[1], TRUE);
-	gdk_input_add_full(wakeup_pipe[0], GDK_INPUT_READ, wake_up_cb,
-			NULL, NULL);
+	g_io_add_watch(g_io_channel_unix_new(wakeup_pipe[0]), G_IO_IN,
+			wake_up_cb,
+			NULL);
 	to_wakeup_pipe = wakeup_pipe[1];
 
 	/* If the pipe is full then we're going to get woken up anyway... */
@@ -657,6 +885,13 @@ int main(int argc, char **argv)
 	 */
 	if (number_of_windows > 0)
 		gtk_main();
+
+	remote_shutdown();
+
+	gdk_display_flush(gdk_display_get_default()); /* [20260914054209] */
+
+	if (!new_copy)
+		_exit(EXIT_SUCCESS);
 
 	return EXIT_SUCCESS;
 }
@@ -715,22 +950,24 @@ static void show_features(void)
 }
 
 static void soap_add(xmlNodePtr body,
-			   xmlChar *function,
-			   const xmlChar *arg1_name, const xmlChar *arg1_value,
-			   const xmlChar *arg2_name, const xmlChar *arg2_value)
+			   const gchar *function,
+			   const gchar *arg1_name, const gchar *arg1_value,
+			   const gchar *arg2_name, const gchar *arg2_value)
 {
 	xmlNodePtr node;
 	xmlNs *rox;
 
 	rox = xmlSearchNsByHref(body->doc, body, ROX_NS);
 
-	node = xmlNewChild(body, rox, function, NULL);
+	node = xmlNewChild(body, rox, BAD_CAST function, NULL);
 
 	if (arg1_name)
 	{
-		xmlNewTextChild(node, rox, arg1_name, arg1_value);
+		xmlNewTextChild(node, rox, BAD_CAST arg1_name,
+				(const xmlChar *) arg1_value);
 		if (arg2_name)
-			xmlNewTextChild(node, rox, arg2_name, arg2_value);
+			xmlNewTextChild(node, rox, BAD_CAST arg2_name,
+					(const xmlChar *) arg2_value);
 	}
 }
 
@@ -804,14 +1041,19 @@ static void child_died_callback(void)
 /* When data is written to_wakeup_pipe, this gets called from the event
  * loop some time later. Useful for getting out of signal handlers, etc.
  */
-static void wake_up_cb(gpointer data, gint source, GdkInputCondition condition)
+static gboolean wake_up_cb(GIOChannel *source, GIOCondition condition,
+			   gpointer user_data)
 {
 	char buf[BUFLEN];
+	gint fd;
 
-	read(source, buf, BUFLEN);
+	fd = g_io_channel_unix_get_fd(source);
+	read(fd, buf, BUFLEN);
 
 	if (child_died_flag)
 		child_died_callback();
+
+	return TRUE;
 }
 
 static void xrandr_size_change(GdkScreen *screen, gpointer user_data)
@@ -842,7 +1084,7 @@ static void add_default_panel_and_pinboard(xmlNodePtr body)
 		char *line = NULL;
 		gsize term;
 		char *filename = choices_find_xdg_path_load("panels",
-				"ROX-Filer", "rox.sourceforge.net");
+				project_name, SITE);
 
 		if (filename)
 			fp = g_io_channel_new_file(filename, "r", &err);
@@ -879,7 +1121,7 @@ static GtkWidget *launch_button_new(const char *label, const char *uri,
 	const gchar *slash;
 	gchar *tip;
 
-	button = button_new_mixed(GTK_STOCK_PREFERENCES, label);
+	button = button_new_mixed("preferences-system", label);
 	closure = g_cclosure_new(G_CALLBACK(launch_uri),
 					g_strdup(uri),
 					(GClosureNotify) g_free);
@@ -907,30 +1149,28 @@ static GtkWidget *launch_button_new(const char *label, const char *uri,
 	return button;
 }
 
-static GList *build_launch(Option *option, xmlNode *node, guchar *label)
+static GList *build_launch(Option *option, xmlNode *node, gchar *label)
 {
-	GtkWidget *align;
 	char *uri;
 	char *appname;
 
 	g_return_val_if_fail(option == NULL, NULL);
 	g_return_val_if_fail(label != NULL, NULL);
 
-	uri = xmlGetProp(node, "uri");
-	appname = xmlGetProp(node, "appname");
+	uri = (char *) xmlGetProp(node, BAD_CAST "uri");
+	appname = (char *) xmlGetProp(node, BAD_CAST "appname");
 
 	g_return_val_if_fail(uri != NULL, NULL);
 
-	align = gtk_alignment_new(0, 0.5, 0, 0);
-
-	gtk_container_add(GTK_CONTAINER(align),
-			  launch_button_new(_(label), uri, appname));
-
-	g_free(uri);
-	if(appname)
-	  g_free(appname);
-
-	return g_list_append(NULL, align);
+	{
+		GtkWidget *btn = launch_button_new(_(label), uri, appname);
+		gtk_widget_set_halign(btn, GTK_ALIGN_START);
+		gtk_widget_set_valign(btn, GTK_ALIGN_CENTER);
+		g_free(uri);
+		if(appname)
+			g_free(appname);
+		return g_list_append(NULL, btn);
+	}
 }
 
 /* Call back from save box to create a rox script */
@@ -973,6 +1213,11 @@ static void make_script_clicked(GtkWidget *button, gpointer udata)
 		filename="rox";
 	image = type_to_icon(application_x_shellscript);
 
+#if 0 /* TODO */
+	/* Alas, menu.c does not export savebox_show() [20260917211605] */
+	savebox_show(_("Save"), filename, image,
+		new_script_cb, GDK_ACTION_COPY);
+#elif 1
 	/* Create a save box to save the script */
 	savebox = gtk_savebox_new(_("Save"));
 	gtk_savebox_set_action(GTK_SAVEBOX(savebox), GDK_ACTION_COPY);
@@ -985,19 +1230,22 @@ static void make_script_clicked(GtkWidget *button, gpointer udata)
 	gtk_savebox_set_icon(GTK_SAVEBOX(savebox), image->pixbuf);
 	g_object_unref(image);
 
+	/* Follow the savebox_show() pattern [20260917211605] */
+	rox_dialog_set_parent_full(savebox, FALSE);
+	number_of_windows++;
+	g_signal_connect(savebox, "destroy",
+			G_CALLBACK(one_less_window), NULL);
 	gtk_widget_show(savebox);
+#endif
 }
 
 /* Build option button to create rox script */
-static GList *build_make_script(Option *option, xmlNode *node, guchar *label)
+static GList *build_make_script(Option *option, xmlNode *node, gchar *label)
 {
-	GtkWidget *align;
 	GtkWidget *button;
 
 	g_return_val_if_fail(option == NULL, NULL);
 	g_return_val_if_fail(label != NULL, NULL);
-
-	align = gtk_alignment_new(0, 0.5, 0, 0);
 
 	button = gtk_button_new_with_label(_(label));
 	g_signal_connect(button, "clicked", G_CALLBACK(make_script_clicked),
@@ -1008,7 +1256,36 @@ static GList *build_make_script(Option *option, xmlNode *node, guchar *label)
 		"If you are using Zero Install you should use 0alias "
 		"instead."));
 
-	gtk_container_add(GTK_CONTAINER(align), button);
+	gtk_widget_set_halign(button, GTK_ALIGN_START);
+	gtk_widget_set_valign(button, GTK_ALIGN_CENTER);
 
-	return g_list_append(NULL, align);
+	return g_list_append(NULL, button);
+}
+
+static void reload_css_clicked(GtkWidget *widget, gpointer data)
+{
+	remote_reload_css();
+}
+
+/* Build option button to reload external stylesheet */
+static GList *build_reload_css(Option *option, xmlNode *node, gchar *label)
+{
+	GtkWidget *button;
+
+	g_return_val_if_fail(option == NULL, NULL);
+	g_return_val_if_fail(label != NULL, NULL);
+
+	button = gtk_button_new_with_label(_(label));
+	g_signal_connect(button, "clicked", G_CALLBACK(reload_css_clicked),
+			 NULL);
+
+	gtk_widget_set_tooltip_text(button,
+			_("Re-read style.css from your ROX-Filer\n"
+		"configuration folder.\n"
+		"Use --dump-css for a starting template."));
+
+	gtk_widget_set_halign(button, GTK_ALIGN_START);
+	gtk_widget_set_valign(button, GTK_ALIGN_CENTER);
+
+	return g_list_append(NULL, button);
 }

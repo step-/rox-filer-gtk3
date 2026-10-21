@@ -1,6 +1,7 @@
 /*
  * ROX-Filer, filer for the ROX desktop project
  * Copyright (C) 2006, Thomas Leonard and others (see changelog for details).
+ * Copyright (C) 2026, step <step.commons@gmail.com>.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the Free
@@ -32,9 +33,12 @@
 #include "bookmarks.h"
 #include "choices.h"
 #include "filer.h"
+#include "minibuffer.h"
+#include "run.h"
 #include "xml.h"
 #include "support.h"
 #include "gui_support.h"
+#include "i18n.h"
 #include "main.h"
 #include "mount.h"
 #include "action.h"
@@ -59,10 +63,6 @@ static void bookmarks_save(void);
 static void bookmarks_add(GtkMenuItem *menuitem, gpointer user_data);
 static void bookmarks_activate(GtkMenuShell *item, FilerWindow *filer_window);
 static GtkWidget *bookmarks_build_menu(FilerWindow *filer_window);
-static void bposition_menu(GtkMenu *menu, gint *x, gint *y,
-		   	  gboolean *push_in, gpointer data);
-static void position_menu_widget(GtkMenu *menu, gint *x, gint *y,
-		   	  gboolean *push_in, gpointer data);
 static void cell_edited(GtkCellRendererText *cell,
 	     const gchar *path_string,
 	     const gchar *new_text,
@@ -76,7 +76,7 @@ static gboolean dir_dropped(GtkWidget *window, GdkDragContext *context,
 			    int x, int y,
 			    GtkSelectionData *selection_data, guint info,
 			    guint time, GtkTreeView *view);
-static void bookmarks_add_dir(const guchar *dir);
+static void bookmarks_add_dir(const gchar *dir);
 static void commit_edits(GtkTreeModel *model);
 
 
@@ -87,8 +87,9 @@ typedef struct {
 	GtkWidget *lbl;
 	DirItem *ditem;
 	char *path;
+	GtkWidget *icon;
 } BItem;
-static MenuIconStyle style;
+static int pixels;
 static int iconw;
 static GList *items;
 static GList *itemshist; //temp
@@ -96,6 +97,9 @@ static guint iconloop;
 static GThread *icont;
 static bool iconfinish;
 static GMutex itemm;
+static GtkSizeGroup *icon_group;
+static GtkSizeGroup *title_group;
+static GtkSizeGroup *dirname_group;
 static void resetitems()
 {
 	if (iconloop)
@@ -108,15 +112,9 @@ static void resetitems()
 		iconloop = 0;
 	}
 
-	style = get_menu_icon_style();
-	switch (style) {
-	case MIS_LARGE:
-		iconw = ICON_WIDTH * 1.2; break;
-	case MIS_SMALL:
-		iconw = small_width + 1; break;
-	default:
-		iconw = small_width / 6;
-	}
+	/* pixels <= 0 means the No Menu Icons" option is set. */
+	pixels = get_menu_icon_pixels();
+	iconw = pixels > 0 ? pixels + 1 : small_width / 6;
 
 	if (items)
 	{
@@ -154,14 +152,28 @@ static gboolean iconloopcb(gpointer p)
 	g_mutex_lock(&itemm);
 	for (GList *next = items; next; next = next->next)
 	{
+		GtkImageType type;
+		GtkWidget *ri;
 		BItem *bi = next->data;
 		if (!bi->ditem) continue;
 
-		GtkWidget *img = menu_make_image(bi->ditem, style);
+		if(!bi->icon) goto next;
+		ri = menu_make_image(bi->ditem, pixels);
+		/* Options > Menus > "Size of icons in menus" "No Icons" */
+		if (!ri) goto next;
 
-		gtk_widget_show(img);
-		gtk_fixed_put((void *)bi->fix, img, -1, -1);
+		/* Replace the placeholder image */
+		if(GTK_IS_IMAGE(ri)) {
+			type = gtk_image_get_storage_type(GTK_IMAGE(ri));
+			if (type == GTK_IMAGE_PIXBUF) {
+				gtk_image_set_from_pixbuf(GTK_IMAGE(bi->icon),
+					gtk_image_get_pixbuf(GTK_IMAGE(ri)));
+			}
+			gtk_widget_show(bi->icon);
+		}
+		gtk_widget_destroy(ri);
 
+next:
 		diritem_free(bi->ditem);
 		bi->ditem = NULL;
 	}
@@ -189,14 +201,10 @@ void bookmarks_show_menu(FilerWindow *filer_window, GtkWidget *widget)
 {
 	GdkEvent *event;
 	static GtkMenu *menu = NULL;
-	int	button = 0;
 
 	event = gtk_get_current_event();
 	if (event)
 	{
-		if (event->type == GDK_BUTTON_RELEASE ||
-		    event->type == GDK_BUTTON_PRESS)
-			button = ((GdkEventButton *) event)->button;
 		gdk_event_free(event);
 	}
 
@@ -207,18 +215,16 @@ void bookmarks_show_menu(FilerWindow *filer_window, GtkWidget *widget)
 	menu = GTK_MENU(bookmarks_build_menu(filer_window));
 
 	if (widget)
-		gtk_menu_popup(menu, NULL, NULL, position_menu_widget, widget,
-			button, gtk_get_current_event_time());
+		gtk_menu_popup_at_pointer(menu, NULL);
 	else
-		gtk_menu_popup(menu, NULL, NULL, bposition_menu, filer_window,
-			button, gtk_get_current_event_time());
+		gtk_menu_popup_at_pointer(menu, NULL);
 }
 
 /* Show the Edit Bookmarks dialog */
 void bookmarks_edit(void)
 {
 	GtkListStore *model;
-	GtkWidget *list, *hbox, *button, *swin;
+	GtkWidget *list, *hbox, *button, *swin, *caption;
 	GtkTreeSelection *selection;
 	GtkCellRenderer *cell;
 	xmlNode *node;
@@ -237,10 +243,13 @@ void bookmarks_edit(void)
 
 	gtk_window_set_position(GTK_WINDOW(bookmarks_window),
 			GTK_WIN_POS_MOUSE);
+	gtk_window_set_default_size(GTK_WINDOW(bookmarks_window), 520, 420);
 
 
-	gtk_dialog_add_button(GTK_DIALOG(bookmarks_window),
-			GTK_STOCK_CLOSE, GTK_RESPONSE_OK);
+	button = button_new_mixed("window-close", _("_Close"));
+	gtk_button_set_use_underline(GTK_BUTTON(button), TRUE);
+	gtk_dialog_add_action_widget(GTK_DIALOG(bookmarks_window),
+			button, GTK_RESPONSE_CLOSE);
 
 	g_signal_connect(bookmarks_window, "destroy",
 			 G_CALLBACK(gtk_widget_destroyed), &bookmarks_window);
@@ -252,12 +261,34 @@ void bookmarks_edit(void)
 			GTK_SHADOW_IN);
 	gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(swin),
 			GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
-	gtk_box_pack_start(GTK_BOX(GTK_DIALOG(bookmarks_window)->vbox),
+	gtk_box_pack_start(GTK_BOX(gtk_dialog_get_content_area(GTK_DIALOG(bookmarks_window))),
 			swin, TRUE, TRUE, 0);
 
-	model = gtk_list_store_new(2, G_TYPE_STRING, G_TYPE_STRING);
+	caption = gtk_label_new(
+			_("Titles use accelerator notation: "
+			  "'_x' underlines x; write '__' for a literal underscore."));
+	gtk_label_set_xalign(GTK_LABEL(caption), 0.0);
+	gtk_widget_set_halign(caption, GTK_ALIGN_START);
+	gtk_widget_set_margin_start(caption, 12);
+	gtk_widget_set_margin_end(caption, 12);
+	gtk_widget_set_margin_top(caption, 12);
+	gtk_widget_set_margin_bottom(caption, 12);
+
+	gtk_box_pack_start(
+			GTK_BOX(gtk_dialog_get_content_area(GTK_DIALOG(bookmarks_window))),
+			caption, FALSE, TRUE, 0);
+	gtk_box_reorder_child(
+			GTK_BOX(gtk_dialog_get_content_area(GTK_DIALOG(bookmarks_window))),
+			caption, 0);
+
+	model = gtk_list_store_new(3, G_TYPE_STRING, G_TYPE_STRING,
+			GDK_TYPE_PIXBUF);
 
 	list = gtk_tree_view_new_with_model(GTK_TREE_MODEL(model));
+
+	cell = gtk_cell_renderer_pixbuf_new();
+	gtk_tree_view_insert_column_with_attributes(GTK_TREE_VIEW(list), 0,
+			"", cell, "pixbuf", 2, NULL);
 
 	cell = gtk_cell_renderer_text_new();
 	g_signal_connect(G_OBJECT(cell), "edited",
@@ -290,42 +321,66 @@ void bookmarks_edit(void)
 
 		if (node->type != XML_ELEMENT_NODE)
 			continue;
-		if (strcmp(node->name, "bookmark") != 0)
+		if (xmlStrcmp(node->name, BAD_CAST "bookmark") != 0)
 			continue;
 
-		mark = xmlNodeListGetString(bookmarks->doc,
+		mark = (gchar *) xmlNodeListGetString(bookmarks->doc,
 					    node->xmlChildrenNode, 1);
 		if (!mark)
 			continue;
 
-		title=xmlGetProp(node, "title");
+		title = (gchar *) xmlGetProp(node, BAD_CAST "title");
 		if(!title)
 			title=mark;
 
 		gtk_list_store_append(model, &iter);
-		gtk_list_store_set(model, &iter, 0, mark, 1, title, -1);
+
+		GdkPixbuf *pixbuf = NULL;
+		char *full = expand_path(mark);
+		if (full)
+		{
+			DirItem *ditem = diritem_new("");
+			diritem_restat(full, ditem, NULL, TRUE);
+			MaskedPixmap *im = di_image(ditem);
+			if (im)
+			{
+				if (!im->sm_pixbuf)
+					pixmap_make_small(im);
+				pixbuf = g_object_ref(im->sm_pixbuf ?
+						im->sm_pixbuf : im->pixbuf);
+			}
+			diritem_free(ditem);
+			g_free(full);
+		}
+		gtk_list_store_set(model, &iter, 0, mark, 1, title,
+				2, pixbuf, -1);
+		if (pixbuf)
+			g_object_unref(pixbuf);
 		if(title!=mark)
 			xmlFree(title);
 
 		xmlFree(mark);
 	}
 
-	gtk_widget_set_size_request(list, 400, 300);
+	gtk_widget_set_size_request(list, 600, 300);
 	gtk_container_add(GTK_CONTAINER(swin), list);
 
-	hbox = gtk_hbutton_box_new();
-	gtk_box_pack_start(GTK_BOX(GTK_DIALOG(bookmarks_window)->vbox),
+	hbox = gtk_button_box_new(GTK_ORIENTATION_HORIZONTAL);
+	gtk_box_pack_start(GTK_BOX(gtk_dialog_get_content_area(GTK_DIALOG(bookmarks_window))),
 			hbox, FALSE, TRUE, 0);
 	gtk_container_set_border_width(GTK_CONTAINER(hbox), 5);
 
-	button = gtk_button_new_from_stock(GTK_STOCK_DELETE);
+	button = button_new_mixed("edit-delete", _("_Delete"));
+	gtk_button_set_use_underline(GTK_BUTTON(button), TRUE);
 	gtk_box_pack_start(GTK_BOX(hbox), button, FALSE, TRUE, 0);
 	g_signal_connect(button, "clicked", G_CALLBACK(edit_delete), list);
 
-	button = gtk_button_new_from_stock(GTK_STOCK_GO_UP);
+	button = button_new_mixed("go-up", _("_Up"));
+	gtk_button_set_use_underline(GTK_BUTTON(button), TRUE);
 	gtk_box_pack_start(GTK_BOX(hbox), button, FALSE, TRUE, 0);
 	g_signal_connect(button, "clicked", G_CALLBACK(reorder_up), list);
-	button = gtk_button_new_from_stock(GTK_STOCK_GO_DOWN);
+	button = button_new_mixed("go-down", _("_Down"));
+	gtk_button_set_use_underline(GTK_BUTTON(button), TRUE);
 	gtk_box_pack_start(GTK_BOX(hbox), button, FALSE, TRUE, 0);
 	g_signal_connect(button, "clicked", G_CALLBACK(reorder_down), list);
 
@@ -360,7 +415,11 @@ void bookmarks_edit(void)
 	g_signal_connect_swapped(model, "rows-reordered",
 			 G_CALLBACK(commit_edits), model);
 
+	rox_dialog_set_parent_full(bookmarks_window, FALSE);
 	gtk_widget_show_all(bookmarks_window);
+
+	gtk_window_present(GTK_WINDOW(bookmarks_window));
+	gtk_widget_grab_focus(list);
 }
 
 static void history_remove(const char *path)
@@ -382,8 +441,13 @@ static void history_remove(const char *path)
 }
 
 /* Add this path to the global history of visited directories. If it
- * already exists there, make it the most recent. If its parent exists
- * already, remove the parent.
+ * already exists there, make it the most recent.
+ *
+ * The sequence is kept complete (no pruning) so that middle-clicking
+ * the Bookmarks button can always reach the previously visited
+ * directory; the Recently Visited menu trims nested entries at display
+ * time via its common-prefix logic. (Upstream pruned the parent here,
+ * r3620, which broke that Back path for ancestor navigation.)
  */
 void bookmarks_add_history(const gchar *path)
 {
@@ -396,13 +460,6 @@ void bookmarks_add_history(const gchar *path)
 		history_hash = g_hash_table_new(g_str_hash, g_str_equal);
 
 	history_remove(new);
-
-	{
-		char *parent;
-		parent = g_dirname(path);
-		history_remove(parent);
-		g_free(parent);
-	}
 
 	history = g_list_prepend(history, new);
 	if (!history_tail)
@@ -439,10 +496,10 @@ gchar *bookmarks_get_top(void)
 	{
 		if (node->type != XML_ELEMENT_NODE)
 			continue;
-		if (strcmp(node->name, "bookmark") != 0)
+		if (xmlStrcmp(node->name, BAD_CAST "bookmark") != 0)
 			continue;
 
-		mark = xmlNodeListGetString(bookmarks->doc,
+		mark = (gchar *) xmlNodeListGetString(bookmarks->doc,
 							node->xmlChildrenNode, 1);
 		if (mark)
 		{
@@ -485,30 +542,11 @@ static void bookmarks_new(void)
 	if (bookmarks)
 		g_object_unref(G_OBJECT(bookmarks));
 	bookmarks = xml_new(NULL);
-	bookmarks->doc = xmlNewDoc("1.0");
+	bookmarks->doc = xmlNewDoc(BAD_CAST "1.0");
 	xmlDocSetRootElement(bookmarks->doc,
-		xmlNewDocNode(bookmarks->doc, NULL, "bookmarks", NULL));
+		xmlNewDocNode(bookmarks->doc, NULL, BAD_CAST "bookmarks", NULL));
 }
 
-static void bposition_menu(GtkMenu *menu, gint *x, gint *y,
-		   	  gboolean *push_in, gpointer data)
-{
-	FilerWindow *filer_window = (FilerWindow *) data;
-
-	gdk_window_get_origin(GTK_WIDGET(filer_window->view)->window, x, y);
-}
-
-static void position_menu_widget(GtkMenu *menu, gint *x, gint *y,
-		   	  gboolean *push_in, gpointer data)
-{
-	GtkWidget *widget = (GtkWidget *) data;
-
-	gdk_window_get_origin(gtk_widget_get_parent_window(widget), x, y);
-	*x = *x + widget->allocation.x;
-
-	widget = gtk_widget_get_parent(widget);
-	*y = *y + widget->allocation.y + widget->allocation.height;
-}
 
 /* Makes sure that 'bookmarks' is up-to-date, reloading from file if it has
  * changed. If no bookmarks were loaded and there is no file then initialise
@@ -519,7 +557,7 @@ static void update_bookmarks()
 	gchar *path;
 
 	/* Update the bookmarks, if possible */
-	path = choices_find_xdg_path_load("Bookmarks.xml", PROJECT, SITE);
+	path = choices_find_xdg_path_load("Bookmarks.xml", project_name, SITE);
 	if (path)
 	{
 		XMLwrapper *wrapper;
@@ -538,6 +576,17 @@ static void update_bookmarks()
 		bookmarks_new();
 }
 
+/* Return TRUE if there are some bookmarks. Call after update_bookmarks(). */
+static gboolean has_bookmarks(void)
+{
+	xmlNode *n = xmlDocGetRootElement(bookmarks->doc);
+	for (n = n ? n->xmlChildrenNode : NULL; n; n = n->next) {
+		if (n->type == XML_ELEMENT_NODE && !xmlStrcmp(n->name, BAD_CAST "bookmark"))
+			return TRUE;
+	}
+	return FALSE;
+}
+
 /* Return the node for the 'mark' bookmark */
 static xmlNode *bookmark_find(const gchar *mark)
 {
@@ -554,10 +603,10 @@ static xmlNode *bookmark_find(const gchar *mark)
 
 		if (node->type != XML_ELEMENT_NODE)
 			continue;
-		if (strcmp(node->name, "bookmark") != 0)
+		if (xmlStrcmp(node->name, BAD_CAST "bookmark") != 0)
 			continue;
 
-		path = xmlNodeListGetString(bookmarks->doc,
+		path = (gchar *) xmlNodeListGetString(bookmarks->doc,
 					node->xmlChildrenNode, 1);
 		if (!path)
 			continue;
@@ -575,9 +624,9 @@ static xmlNode *bookmark_find(const gchar *mark)
 /* Save the bookmarks to a file */
 static void bookmarks_save()
 {
-	guchar	*save_path;
+	gchar	*save_path;
 
-	save_path = choices_find_xdg_path_save("Bookmarks.xml", PROJECT, SITE,
+	save_path = choices_find_xdg_path_save("Bookmarks.xml", project_name, SITE,
 					       TRUE);
 	if (save_path)
 	{
@@ -596,7 +645,7 @@ static void bookmarks_add(GtkMenuItem *menuitem, gpointer user_data)
 	bookmarks_add_dir(filer_window->sym_path);
 }
 
-static void bookmarks_add_dir(const guchar *dir)
+static void bookmarks_add_dir(const gchar *dir)
 {
 	xmlNode	*bookmark, *node;
 	gchar *basename, *path, *title, *alist = g_new0(gchar, 27);
@@ -609,18 +658,18 @@ static void bookmarks_add_dir(const guchar *dir)
 
 	basename = g_path_get_basename(path);
 	node = xmlDocGetRootElement(bookmarks->doc);
-	bookmark = xmlNewTextChild(node, NULL, "bookmark", path);
+	bookmark = xmlNewTextChild(node, NULL, BAD_CAST "bookmark", (const xmlChar *) path);
 
 	for (node = node->xmlChildrenNode; node; node = node->next)
 	{
-		title = xmlGetProp(node, "title");
+		title = (gchar *) xmlGetProp(node, BAD_CAST "title");
 		if (title){
 			get_mnemonic(title, alist);
 			xmlFree(title);
 		}
 	}
 
-	xmlSetProp(bookmark, "title", add_mnemonic(basename, alist));
+	xmlSetProp(bookmark, BAD_CAST "title", (const xmlChar *) add_mnemonic(basename, alist));
 
 	bookmarks_save();
 
@@ -642,7 +691,7 @@ static void bookmarks_activate(GtkMenuShell *item, FilerWindow *filer_window)
 
 	mark=g_object_get_data(G_OBJECT(item), "bookmark-path");
 	if(!mark) {
-		label = GTK_LABEL(GTK_BIN(item)->child);
+		label = GTK_LABEL(gtk_bin_get_child(GTK_BIN(item)));
 		mark = gtk_label_get_text(label);
 	}
 
@@ -791,7 +840,7 @@ static gboolean dir_dropped(GtkWidget *window, GdkDragContext *context,
 	GtkListStore *model;
 	GList *uris, *next;
 
-	if (!selection_data->data)
+	if (!gtk_selection_data_get_data(selection_data))
 	{
 		/* Timeout? */
 		gtk_drag_finish(context, FALSE, FALSE, time);	/* Failure */
@@ -800,11 +849,11 @@ static gboolean dir_dropped(GtkWidget *window, GdkDragContext *context,
 
 	model = GTK_LIST_STORE(gtk_tree_view_get_model(view));
 
-	uris = uri_list_to_glist(selection_data->data);
+	uris = uri_list_to_glist((const char *) gtk_selection_data_get_data(selection_data));
 
 	for (next = uris; next; next = next->next)
 	{
-		guchar *path;
+		gchar *path;
 
 		path = get_local_path((EscapedPath *) next->data);
 
@@ -851,12 +900,12 @@ static void commit_edits(GtkTreeModel *model)
 			xmlNode *bookmark;
 
 			gtk_tree_model_get_value(model, &iter, 0, &mark);
-			bookmark = xmlNewTextChild(root, NULL, "bookmark",
-					g_value_get_string(&mark));
+			bookmark = xmlNewTextChild(root, NULL, BAD_CAST "bookmark",
+					(const xmlChar *) g_value_get_string(&mark));
 			g_value_unset(&mark);
 			gtk_tree_model_get_value(model, &iter, 1, &title);
-			xmlSetProp(bookmark, "title",
-				   g_value_get_string(&title));
+			xmlSetProp(bookmark, BAD_CAST "title",
+				   (const xmlChar *) g_value_get_string(&title));
 			g_value_unset(&title);
 		} while (gtk_tree_model_iter_next(model, &iter));
 	}
@@ -891,6 +940,11 @@ static void cell_edited(GtkCellRendererText *cell,
 
 static void activate_edit(GtkMenuShell *item, gpointer data)
 {
+	if (!has_bookmarks()) {
+		/* TRANSLATORS: Keep consistent with the actual button label. */
+		report_error(_("You should first add bookmarks using the \"Add New Bookmark\" button"));
+		return;
+	}
 	bookmarks_edit();
 }
 
@@ -925,36 +979,61 @@ static GtkWidget *build_history_menu(FilerWindow *filer_window)
 			continue;
 
 		GtkWidget *label, *fix;
-		PangoLayout *layout;
-		int i = 0, width, height;
+
+		/* Input: 'path' and 'nn' string pointers (abs path or "").
+		Output: 'pathp' and 'nn' point to the last common
+		separator ('/'), or index 0 if no common separator exists. */
+		int i = 0;
 		char *pathp, *bpath, *nn = next->next ? (char *) next->next->data : "";
 		pathp = path;
 
-		while ((nn+=1) && (pathp+=1) && (++i))
-			if (*nn != *pathp)
-				break;
+		/* Advance to the last common byte */
+		while (*pathp != '\0' && *pathp == *nn && pathp[1] != '\0' && pathp[1] == nn[1]) {
+			pathp++;
+			nn++;
+			i++;
+		}
+		/* Backtrack to the last common separator. */
+		while (pathp > path && *pathp != '/') {
+			pathp--;
+			nn--;
+			i--;
+		}
+/*
+PROBLEMS FIXED:
+1. Buffer Over-read: Checks for '\0' before evaluating memory boundaries.
+2. Unsafe Fallback OOB: Prevents blind pointer increment on the "" fallback.
+3. Pointer Overshoot: Uses 1-byte lookahead to break exactly on the last
+   matching byte without requiring post-loop backtracking arithmetic.
+4. UTF-8 Slicing & Path Integrity: Backtracks to the last common '/' to
+   guarantee pointers rest on valid UTF-8 boundaries and complete directories.
+ */
 
 		bpath = g_strndup(path, i);
 		item = gtk_menu_item_new();
 
-		fix = gtk_fixed_new();
+		fix = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
 		BItem *bi = g_new0(BItem, 1);
 		bi->fix = fix;
 		bi->path = g_strdup(path);
 		itemshist = g_list_append(itemshist, bi);
 
 		label =  gtk_label_new(bpath);
+		gtk_label_set_xalign(GTK_LABEL(label), 0.0);
+		gtk_widget_set_halign(label, GTK_ALIGN_START);
 
-		gtk_widget_modify_fg(label,
-				GTK_STATE_NORMAL,
-				&label->style->text[GTK_STATE_INSENSITIVE]);
+		{
+			GtkStyleContext *ctx = gtk_widget_get_style_context(label);
+			GdkRGBA rgba;
+			gtk_style_context_get_color(ctx, GTK_STATE_FLAG_INSENSITIVE, &rgba);
+			widget_set_fg_color(label, &rgba);
+		}
 
-		layout = gtk_label_get_layout(GTK_LABEL(label));
-		pango_layout_get_pixel_size(layout, &width, &height);
-
-		gtk_fixed_put(GTK_FIXED(fix), label, iconw, 0);
+		gtk_box_pack_start(GTK_BOX(fix), label, FALSE, FALSE, 0);
 		label =  gtk_label_new(pathp);
-		gtk_fixed_put(GTK_FIXED(fix), label, width + iconw, 0);
+		gtk_label_set_xalign(GTK_LABEL(label), 0.0);
+		gtk_widget_set_halign(label, GTK_ALIGN_START);
+		gtk_box_pack_start(GTK_BOX(fix), label, TRUE, TRUE, 0);
 
 		gtk_container_add(GTK_CONTAINER(item), fix);
 
@@ -982,8 +1061,182 @@ static GtkWidget *build_history_menu(FilerWindow *filer_window)
 	return menu;
 }
 
-/* Builds the bookmarks' menu. Done whenever the bookmarks icon has been
- * clicked.
+/* [20260913094148] Row activation for the Numbered Groups submenu:
+ * jump to the saved slot (directory + selection restore).
+ */
+static void groups_activate(GtkMenuItem *item, FilerWindow *filer_window)
+{
+	char	*name;
+
+	name = g_object_get_data(G_OBJECT(item), "group-name");
+	if (name)
+		group_restore(filer_window, name);
+}
+
+/* [20260913094148] Open a filer window showing Groups.xml for hand-editing.
+ */
+static void groups_edit_xml(GtkMenuItem *item, FilerWindow *filer_window)
+{
+	gchar	*path;
+
+	(void) item;
+	(void) filer_window;
+
+	path = choices_find_xdg_path_save("Groups.xml", project_name,
+					  SITE, TRUE);
+	if (path)
+	{
+		open_to_show(path);
+		g_free(path);
+	}
+}
+
+/* [20261009085331] Open the manual at "Saving and restoring the
+ * selection" for the Numbered Groups submenu.
+ */
+static void groups_show_help(GtkMenuItem *item, FilerWindow *filer_window)
+{
+	gchar	*manual = NULL;
+	gchar	*base, *uri;
+	gchar	*errmsg = NULL;
+
+	(void) item;
+	(void) filer_window;
+
+	if (current_lang)
+	{
+		manual = g_strconcat(app_dir, "/Help/Manual-",
+				     current_lang, ".html", NULL);
+		if (!file_exists(manual) && strchr(current_lang, '_'))
+		{
+			/* Try again without the territory */
+			strcpy(strrchr(manual, '_'), ".html");
+		}
+		if (!file_exists(manual))
+			null_g_free(&manual);
+	}
+
+	if (!manual)
+	{
+		manual = g_strconcat(app_dir, "/Help/Manual.html", NULL);
+	}
+
+	if (!file_exists(manual))
+	{
+		/* Same single error as Help > Manual (menu_rox_help):
+		 * run_by_path() reports the missing file itself, so
+		 * stay silent here rather than adding a second dialog.
+		 */
+		run_by_path(manual);
+		g_free(manual);
+		return;
+	}
+
+	base = g_filename_to_uri(manual, NULL, NULL);
+	if (!base)
+	{
+		base = g_strconcat("file://", manual, NULL);
+	}
+	uri = g_strconcat(base, "#save-selection", NULL);
+	if (!run_by_uri(uri, &errmsg))
+	{
+		report_error("%s", errmsg ? errmsg : uri);
+	}
+	g_free(errmsg);
+	g_free(uri);
+	g_free(base);
+	g_free(manual);
+}
+
+/* Build the Numbered Groups submenu. Done whenever the bookmarks
+ * menu is built, so the rows always mirror Groups.xml.
+ */
+static GtkWidget *build_groups_menu(FilerWindow *filer_window)
+{
+	GtkWidget	*menu;
+	GtkWidget	*tail;
+	int		i;
+
+	menu = gtk_menu_new();
+
+	for (i = 0; i <= 9; i++)
+	{
+		GtkWidget	*item;
+		char		name[2] = "0";
+		char		*dir = NULL;
+		int		n_items = 0;
+		gchar		*label;
+
+		name[0] = '0' + i;
+		if (group_get_info(name, &dir, &n_items))
+		{
+			gchar *hint;
+
+			/* Binding hint tracks group_digits_modifier */
+			if (o_group_digits_modifier.int_value)
+			{
+				hint = g_strdup_printf("Alt+%d", i);
+			}
+			else
+			{
+				hint = g_strdup_printf("%d", i);
+			}
+			if (n_items > 0)
+			{
+				label = g_strdup_printf("%d: %s (+%d)  [%s]",
+							i, dir, n_items, hint);
+			}
+			else
+			{
+				label = g_strdup_printf("%d: %s  [%s]",
+							i, dir, hint);
+			}
+			g_free(hint);
+			g_free(dir);
+
+			item = gtk_menu_item_new_with_label(label);
+			g_free(label);
+
+			g_object_set_data_full(G_OBJECT(item), "group-name",
+					g_strdup(name), g_free);
+			g_signal_connect(item, "activate",
+					G_CALLBACK(groups_activate),
+					filer_window);
+		}
+		else
+		{
+			label = g_strdup_printf("%d: %s", i, _("(empty)"));
+			item = gtk_menu_item_new_with_label(label);
+			g_free(label);
+			gtk_widget_set_sensitive(item, FALSE);
+		}
+		gtk_widget_show(item);
+		gtk_menu_shell_append(GTK_MENU_SHELL(menu), item);
+	}
+
+	/* Slot reset: open the config dir with
+	 * Groups.xml wink-selected; the user deletes <group> nodes.
+	 */
+	tail = gtk_separator_menu_item_new();
+	gtk_widget_show(tail);
+	gtk_menu_shell_append(GTK_MENU_SHELL(menu), tail);
+
+	tail = gtk_menu_item_new_with_mnemonic(_("_Edit Groups.xml"));
+	g_signal_connect(tail, "activate",
+			G_CALLBACK(groups_edit_xml), filer_window);
+	gtk_widget_show(tail);
+	gtk_menu_shell_append(GTK_MENU_SHELL(menu), tail);
+
+	tail = gtk_menu_item_new_with_mnemonic(_("_Help topic"));
+	g_signal_connect(tail, "activate",
+			G_CALLBACK(groups_show_help), filer_window);
+	gtk_widget_show(tail);
+	gtk_menu_shell_append(GTK_MENU_SHELL(menu), tail);
+
+	return menu;
+}
+
+/* Build the bookmarks menu. Done on Go icon clicked.
  */
 static GtkWidget *bookmarks_build_menu(FilerWindow *filer_window)
 {
@@ -991,27 +1244,65 @@ static GtkWidget *bookmarks_build_menu(FilerWindow *filer_window)
 	GtkWidget *item;
 	xmlNode *node;
 	gboolean need_separator = TRUE;
-	int maxwidth = 0, count = 4;
+	int count = 6;
+
+	if (!title_group)
+		title_group = gtk_size_group_new(GTK_SIZE_GROUP_HORIZONTAL);
+	if (!dirname_group)
+		dirname_group = gtk_size_group_new(GTK_SIZE_GROUP_HORIZONTAL);
+	if (!icon_group)
+		icon_group = gtk_size_group_new(GTK_SIZE_GROUP_HORIZONTAL);
 
 	menu = gtk_menu_new();
 
+	/* Per-window navigation [20260825105933]. The menu is rebuilt
+	 * on every popup, so sensitivity mirrors the current stacks. */
+	item = gtk_menu_item_new_with_label(_("Back"));
+	gtk_widget_set_sensitive(item, filer_window->back_stack != NULL);
+	g_signal_connect_swapped(item, "activate",
+			G_CALLBACK(filer_go_back), filer_window);
+	gtk_menu_item_set_accel_path(GTK_MENU_ITEM(item), "<filer>/Back");
+	gtk_accel_label_set_accel(GTK_ACCEL_LABEL(gtk_bin_get_child(GTK_BIN(item))),
+			GDK_KEY_Left, GDK_MOD1_MASK);
+	gtk_widget_show(item);
+	gtk_menu_attach(GTK_MENU(menu), item, 0, 1, 0, 1);
+
+	item = gtk_menu_item_new_with_label(_("Forward"));
+	gtk_widget_set_sensitive(item, filer_window->fwd_stack != NULL);
+	g_signal_connect_swapped(item, "activate",
+			G_CALLBACK(filer_go_forward), filer_window);
+	gtk_menu_item_set_accel_path(GTK_MENU_ITEM(item), "<filer>/Forward");
+	gtk_accel_label_set_accel(GTK_ACCEL_LABEL(gtk_bin_get_child(GTK_BIN(item))),
+			GDK_KEY_Right, GDK_MOD1_MASK);
+	gtk_widget_show(item);
+	gtk_menu_attach(GTK_MENU(menu), item, 1, 2, 0, 1);
+
+	/* TRANSLATORS: This label is cited in an error message. */
 	item = gtk_menu_item_new_with_label(_("Add New Bookmark"));
 	g_signal_connect(item, "activate",
 			 G_CALLBACK(bookmarks_add), filer_window);
 	gtk_widget_show(item);
-	gtk_menu_attach(GTK_MENU(menu), item, 0, 1, 0, 1);
+	gtk_menu_attach(GTK_MENU(menu), item, 0, 1, 1, 2);
 	gtk_menu_shell_select_item(GTK_MENU_SHELL(menu), item);
 
 	item = gtk_menu_item_new_with_label(_("Edit Bookmarks"));
 	g_signal_connect(item, "activate", G_CALLBACK(activate_edit), NULL);
 	gtk_widget_show(item);
-	gtk_menu_attach(GTK_MENU(menu), item, 0, 1, 1, 2);
+	gtk_menu_attach(GTK_MENU(menu), item, 0, 1, 2, 3);
 
-	item = gtk_menu_item_new_with_label(_("Recently Visited"));
+	/* TRANSLATORS: "Recently Visited" is cited by the toolbar "Go" tooltip */
+	item = gtk_menu_item_new_with_mnemonic(_("_Recently Visited"));
 	gtk_widget_show(item);
-	gtk_menu_attach(GTK_MENU(menu), item, 1, 2, 0, 1);
+	gtk_menu_attach(GTK_MENU(menu), item, 1, 2, 1, 2);
 	gtk_menu_item_set_submenu(GTK_MENU_ITEM(item),
 			build_history_menu(filer_window));
+
+	/* [20260913094148] Numbered-group slots (Groups.xml) */
+	item = gtk_menu_item_new_with_mnemonic(_("_Numbered Groups"));
+	gtk_widget_show(item);
+	gtk_menu_attach(GTK_MENU(menu), item, 1, 2, 2, 3);
+	gtk_menu_item_set_submenu(GTK_MENU_ITEM(item),
+			build_groups_menu(filer_window));
 
 	/* Now add all the bookmarks to the menu */
 
@@ -1023,22 +1314,20 @@ static GtkWidget *bookmarks_build_menu(FilerWindow *filer_window)
 	{
 		gchar *mark, *title, *path, *dirname;
 		GtkWidget *label, *fix;
-		PangoLayout *layout;
-		int width, height;
 
 		if (node->type != XML_ELEMENT_NODE)
 			continue;
-		if (strcmp(node->name, "bookmark") != 0)
+		if (xmlStrcmp(node->name, BAD_CAST "bookmark") != 0)
 			continue;
 
-		mark = xmlNodeListGetString(bookmarks->doc,
+		mark = (gchar *) xmlNodeListGetString(bookmarks->doc,
 					    node->xmlChildrenNode, 1);
 		if (!mark)
 			continue;
 
 		path=expand_path(mark);
 
-		title=xmlGetProp(node, "title");
+		title = (gchar *) xmlGetProp(node, BAD_CAST "title");
 		if(!title)
 			title=mark;
 
@@ -1061,33 +1350,44 @@ static GtkWidget *bookmarks_build_menu(FilerWindow *filer_window)
 			need_separator = FALSE;
 		}
 
-		fix = gtk_fixed_new();
+		fix = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
 		BItem *bi = g_new0(BItem, 1);
 		bi->fix = fix;
 		bi->path = g_strdup(path);
+
+		/* Placeholder image */
+		bi->icon = gtk_image_new();
+		gtk_widget_set_size_request(bi->icon, iconw, iconw);
+		gtk_box_pack_start(GTK_BOX(fix), bi->icon, FALSE, FALSE, 0);
+		gtk_size_group_add_widget(icon_group, bi->icon);
+
 		items = g_list_append(items, bi);
 
 		label =  gtk_label_new_with_mnemonic(title);
+		gtk_label_set_xalign(GTK_LABEL(label), 0.0);
+		gtk_widget_set_halign(label, GTK_ALIGN_START);
 
-		layout = gtk_label_get_layout(GTK_LABEL(label));
-		pango_layout_get_pixel_size(layout, &width, &height);
-		if (width + height/2 + iconw > maxwidth)
-			maxwidth = width + height/2 + iconw;
-
-		gtk_fixed_put(GTK_FIXED(fix), label, iconw, 0);
+		gtk_size_group_add_widget(title_group, label);
+		gtk_box_pack_start(GTK_BOX(fix), label, FALSE, TRUE, 0);
 
 		dirname = g_path_get_dirname(mark);
 		label = gtk_label_new(dirname);
+		gtk_label_set_xalign(GTK_LABEL(label), 0.0);
+		gtk_widget_set_halign(label, GTK_ALIGN_START);
 		bi->lbl = label;
 
-		gtk_widget_modify_fg (label,
-				GTK_STATE_NORMAL,
-				&label->style->text[GTK_STATE_INSENSITIVE]);
+		{
+			GtkStyleContext *ctx = gtk_widget_get_style_context(label);
+			GdkRGBA rgba;
+			gtk_style_context_get_color(ctx, GTK_STATE_FLAG_INSENSITIVE, &rgba);
+			widget_set_fg_color(label, &rgba);
+		}
 
 		gtk_label_set_max_width_chars(GTK_LABEL(label), 30);
 		gtk_label_set_ellipsize(GTK_LABEL(label), PANGO_ELLIPSIZE_MIDDLE);
 
-		gtk_fixed_put(GTK_FIXED(fix), label, maxwidth, 0);
+		gtk_size_group_add_widget(dirname_group, label);
+		gtk_box_pack_start(GTK_BOX(fix), label, TRUE, TRUE, 0);
 
 		gtk_container_add(GTK_CONTAINER(item), fix);
 		gtk_menu_attach(GTK_MENU(menu), item, 0, 2, count, count + 1);
@@ -1102,10 +1402,6 @@ static GtkWidget *bookmarks_build_menu(FilerWindow *filer_window)
 
 		g_free(dirname);
 	}
-
-	for (GList *next = items; next; next = next->next)
-		gtk_fixed_move((void *)((BItem *)next->data)->fix,
-				((BItem *)next->data)->lbl, maxwidth, 0);
 
 	items = g_list_concat(items, itemshist);
 	itemshist = NULL;

@@ -26,6 +26,7 @@
 #ifdef HAVE_LIBINTL_H
 #include <libintl.h>
 #endif
+#include <locale.h>
 
 #include "global.h"
 

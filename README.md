@@ -1,11 +1,30 @@
+rox-filer-gtk3
+==============
 
+Homepage: <https://github.com/step-/rox-filer-gtk3>
+
+A fast, lightweight, file and desktop manager based on GTK3,
+featuring the traditional pinboard-based X11 desktop.
+Forked from the feature-enhanced [jun7 fork] of the original ROX-Filer.
+Further enhanced for [Fatdog64 Linux].
+
+Project focus: Correctness and compatibility.
+
+The [NEWS] file details rox-filer-gtk3.
+
+[jun7 fork]: https://github.com/jun7/rox-filer
+[Fatdog64 Linux]: https://distro.ibiblio.org/fatdog/web
+[NEWS]: NEWS.md
+
+ROX-Filer jun7
+==============
 Changes
 - **Short cut keys around Copy and Paste are changed**
 
 - https://github.com/jun7/rox-filer/wiki/Changes
 - https://github.com/jun7/rox-filer/wiki/Screenshots
 
-Suggested new oparations
+Suggested new operations
 - right drag on toolbar: temporary resize of items
 - shift enter while reg select: switch to temp filter
 - scroll on toolbar and size button: linked window and huge icons
@@ -13,8 +32,8 @@ Suggested new oparations
 - new assigns of buttons of toolbar: see tooltip texts
 
 
-ROX-Filer
-=========
+ROX-Filer original
+==================
 A RISC OS-like filer for X
 by Thomas Leonard
 

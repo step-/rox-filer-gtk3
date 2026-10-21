@@ -1,6 +1,7 @@
 /*
  * ROX-Filer, filer for the ROX desktop project
  * Copyright (C) 2006, Thomas Leonard and others (see changelog for details).
+ * Copyright (C) 2026, step <step.commons@gmail.com>.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the Free
@@ -49,18 +50,45 @@
 #include "diritem.h"
 #include "action.h"
 #include "options.h"
+#include "pixmaps.h"
 
 /* Static prototypes */
 static void apprun_menu(GtkWidget *item, gpointer data);
-static GtkWidget *create_menu_item(xmlNode *node);
+static GtkWidget *create_menu_item(xmlNode *node, const char *app_dir);
+static GtkWidget *appmenu_add_submenu(xmlNode *subm_node, const gchar *app_dir);
 static void show_app_help(GtkWidget *item, gpointer data);
-static void build_menu_for_type(GList *paths, MIME_type *type);
-static gboolean build_app_menu(const char *app_dir, DirItem *app_item);
+static void build_menu_for_type(GList *paths, MIME_type *type, GList **items, gboolean track);
+static void show_sendto_tree(GtkWidget *w);
+
+/* Show a SendTo item and its whole subtree, except the submenus themselves:
+ * menu_from_dir() never shows what it builds, so submenu * children would stay
+ * hidden in popups shown without show_all (pinboard, panel) [20260921205103].
+ */
+static void show_sendto_tree(GtkWidget *w)
+{
+	GtkWidget *sub;
+
+	gtk_widget_show(w);
+	if (!GTK_IS_MENU_ITEM(w))
+	{
+		return;
+	}
+	sub = gtk_menu_item_get_submenu(GTK_MENU_ITEM(w));
+	if (!sub)
+	{
+		return;
+	}
+	gtk_container_foreach(GTK_CONTAINER(sub),
+			(GtkCallback) show_sendto_tree, NULL);
+}
+
+/* Static prototypes (continued) */
+static gboolean build_app_menu(const char *app_dir, DirItem *app_item, GList **items);
 static void mnt_eject(GtkWidget *item, gpointer data);
 
 /* There can only be one menu open at a time... we store: */
 static GtkWidget *current_menu = NULL;	/* The GtkMenu */
-static guchar *current_app_path = NULL;	/* The path of the application */
+static gchar *current_app_path = NULL;	/* The path of the application */
 static GList *current_items = NULL;	/* The GtkMenuItems we added directly
 					 * to it --- not submenu items.
 					 */
@@ -86,61 +114,145 @@ void appmenu_remove(void)
 	current_items = NULL;
 }
 
+static gboolean menu_has_items(GtkWidget *menu)
+{
+	GList	*children = gtk_container_get_children(GTK_CONTAINER(menu));
+	gboolean has = children != NULL;
+
+	g_list_free(children);
+	return has;
+}
+
 /* Add AppMenu entries to 'menu', if appropriate.
- * This function modifies the menu stored in "menu".
  * 'app_dir' is the pathname of the application directory, and 'item'
  * is the corresponding DirItem.
- * Returns number of entries added.
+ * Used for the pinboard/panel icon menu: prepends the AppMenu entries
+ * flat and a "Send To..." submenu to the top of 'menu'.
  * Call appmenu_remove() to undo the effect.
  */
-int appmenu_add(FilerWindow *slctwin, const gchar *app_dir, DirItem *app_item, GtkWidget *menu)
+void appmenu_add(FilerWindow *slctwin, const gchar *app_dir, DirItem *app_item, GtkWidget *menu)
 {
-	GList	*next;
-	GtkWidget *sep;
-	int nadded = 0;
+	GList		*items = NULL, *sendto_items = NULL, *next, *rev;
+	GtkWidget	*sendto_menu, *sendto_item;
+	gboolean	 is_app = FALSE;
 
-	g_return_val_if_fail(menu != NULL, 0);
+	g_return_if_fail(menu != NULL);
 
 	/* Should have called appmenu_remove() already... */
-	g_return_val_if_fail(current_menu == NULL, 0);
-	g_return_val_if_fail(current_items == NULL, 0);
+	g_return_if_fail(current_menu == NULL);
+	g_return_if_fail(current_items == NULL);
 
-	if (slctwin || !build_app_menu(app_dir, app_item))
+	if (!slctwin)
+		is_app = build_app_menu(app_dir, app_item, &items);
+
+	if (slctwin || !is_app)
 	{
 		GList *paths =    slctwin ? filer_selected_items(slctwin) :
 			g_list_append(NULL, g_strdup(app_dir));
 		MIME_type *type = slctwin ? menu_selection_type(slctwin) :
 			app_item->mime_type;
-		build_menu_for_type(paths, type);
+		build_menu_for_type(paths, type, &sendto_items, FALSE);
+	}
+
+	if (sendto_items)
+	{
+		/* Dedicated "Send To..." submenu [20260923205153].
+		 * menu_start_detached() leaves the parent item unparented.
+		 * Destroying the parent cascades to the submenu children. */
+		sendto_menu = menu_start_detached(N_("_Send To..."), menu,
+				&sendto_item);
+		for (next = sendto_items; next; next = next->next)
+			gtk_menu_shell_append(GTK_MENU_SHELL(sendto_menu),
+					GTK_WIDGET(next->data));
+		g_list_free(sendto_items);
+		show_sendto_tree(sendto_item);
+		items = g_list_append(items, sendto_item);
+		current_items = g_list_prepend(current_items, sendto_item);
 	}
 
 	if (app_item && app_item->flags & ITEM_FLAG_MOUNT_POINT)
 	{
-		GtkWidget *item;
-		item = gtk_menu_item_new_with_label(_("Eject"));
+		GtkWidget *item = gtk_menu_item_new_with_label(_("Eject"));
 		gtk_widget_show(item);
-		current_items = g_list_prepend(current_items, item);
 		g_signal_connect(item, "activate", G_CALLBACK(mnt_eject), NULL);
+		items = g_list_append(items, item);
+		current_items = g_list_prepend(current_items, item);
 	}
 
-	if (current_items)
+	if (items)
 	{
-		sep = gtk_menu_item_new();
-		current_items = g_list_prepend(current_items, sep);
+		GtkWidget *sep = gtk_separator_menu_item_new();
 		gtk_widget_show(sep);
+		items = g_list_append(items, sep);
+		current_items = g_list_prepend(current_items, sep);
 	}
 
-	for (next = current_items; next; next = next->next)
+	/* Prepend the group to the top of 'menu', preserving order.
+	 * g_list_reverse() mutates 'items' in place and returns the new head,
+	 * so 'rev' and 'items' share the same nodes: free 'rev' only.
+	 */
+	rev = g_list_reverse(items);
+	for (next = rev; next; next = next->next)
+		gtk_menu_shell_prepend(GTK_MENU_SHELL(menu), GTK_WIDGET(next->data));
+	g_list_free(rev);
+
+	current_menu = menu;
+	current_app_path = g_strdup(app_dir);
+}
+
+/* Populate the given File menu instance's "App..." and "SendTo..." submenus.
+ * For mount points, also inserts a flat "Eject" item above Delete.
+ * Call appmenu_remove() to undo the effect.
+ */
+void appmenu_add_submenus(FilerWindow *slctwin, const gchar *app_dir, DirItem *app_item, FileMenu *fm)
+{
+	GtkWidget	*app_menu = fm->app_menu;
+	GtkWidget	*sendto_menu = fm->sendto_menu;
+	GtkWidget	*menu = fm->menu;
+	GList		*app_items = NULL, *sendto_items = NULL, *next;
+	gboolean	 is_app = FALSE;
+
+	g_return_if_fail(fm != NULL);
+	g_return_if_fail(menu != NULL);
+
+	/* Should have called appmenu_remove() already... */
+	g_return_if_fail(current_menu == NULL);
+	g_return_if_fail(current_items == NULL);
+
+	if (!slctwin)
+		is_app = build_app_menu(app_dir, app_item, &app_items);
+
+	if (slctwin || !is_app)
 	{
-		gtk_menu_shell_prepend(GTK_MENU_SHELL(menu),
-					GTK_WIDGET(next->data));
-		nadded++;
+		GList *paths =    slctwin ? filer_selected_items(slctwin) :
+			g_list_append(NULL, g_strdup(app_dir));
+		MIME_type *type = slctwin ? menu_selection_type(slctwin) :
+			app_item->mime_type;
+		build_menu_for_type(paths, type, &sendto_items, TRUE);
+	}
+
+	for (next = app_items; next; next = next->next)
+		gtk_menu_shell_append(GTK_MENU_SHELL(app_menu), GTK_WIDGET(next->data));
+	for (next = sendto_items; next; next = next->next)
+		gtk_menu_shell_append(GTK_MENU_SHELL(sendto_menu), GTK_WIDGET(next->data));
+
+	g_list_free(app_items);
+	g_list_free(sendto_items);
+
+	gtk_widget_set_sensitive(fm->app_item, menu_has_items(app_menu));
+	gtk_widget_set_sensitive(fm->sendto_item, menu_has_items(sendto_menu));
+
+	if (app_item && app_item->flags & ITEM_FLAG_MOUNT_POINT)
+	{
+		GtkWidget *item = gtk_menu_item_new_with_label(_("Eject"));
+		gtk_widget_show(item);
+		g_signal_connect(item, "activate", G_CALLBACK(mnt_eject), NULL);
+		gtk_menu_shell_insert(GTK_MENU_SHELL(menu), item, FILE_MENU_DELETE);
+		current_items = g_list_prepend(current_items, item);
 	}
 
 	current_menu = menu;
 	current_app_path = g_strdup(app_dir);
-
-	return nadded;
 }
 
 
@@ -149,7 +261,7 @@ int appmenu_add(FilerWindow *slctwin, const gchar *app_dir, DirItem *app_item, G
  ****************************************************************/
 
 /* Create a new menu and return it */
-static GtkWidget *appmenu_add_submenu(xmlNode *subm_node)
+static GtkWidget *appmenu_add_submenu(xmlNode *subm_node, const gchar *app_dir)
 {
 	xmlNode	*node;
 	GtkWidget *sub_menu;
@@ -162,7 +274,7 @@ static GtkWidget *appmenu_add_submenu(xmlNode *subm_node)
 	{
 		GtkWidget *item;
 
-		item = create_menu_item(node);
+		item = create_menu_item(node, app_dir);
 		if (item)
 			gtk_menu_shell_append(GTK_MENU_SHELL(sub_menu), item);
 	}
@@ -171,65 +283,141 @@ static GtkWidget *appmenu_add_submenu(xmlNode *subm_node)
 }
 
 /* Create and return a menu item */
-static GtkWidget *create_menu_item(xmlNode *node)
+static GtkWidget *create_menu_item(xmlNode *node, const gchar *app_dir)
 {
 	GtkWidget *item;
 	xmlNode *label_node;
-	guchar	*label, *option = NULL;
-	guchar	*icon_name = NULL;
+	gchar	*label, *option = NULL;
+	gchar	*icon_name = NULL;
 	gboolean is_submenu;
+	gint	size;
 
 	if (node->type != XML_ELEMENT_NODE)
 		return NULL;
 
-	if (strcmp(node->name, "Item") == 0)
+	if (xmlStrcmp(node->name, BAD_CAST "Item") == 0)
 	{
 		is_submenu = FALSE;
-		option = xmlGetProp(node, "option");
+		option = (gchar *) xmlGetProp(node, BAD_CAST "option");
 	}
-	else if (strcmp(node->name, "AppMenu") == 0)
+	else if (xmlStrcmp(node->name, BAD_CAST "AppMenu") == 0)
 		is_submenu = TRUE;
 	else
 		return NULL;
 
 	/* Create the item */
-	label_node = get_subnode(node, NULL, "Label");
+	label_node = get_subnode(node, NULL, BAD_CAST "Label");
 	if (label_node)
 	{
-		label = xmlNodeListGetString(label_node->doc,
+		label = (gchar *) xmlNodeListGetString(label_node->doc,
 					label_node->xmlChildrenNode, 1);
 	}
 	else
 	{
-		label = xmlGetProp(node, "label");
+		label = (gchar *) xmlGetProp(node, BAD_CAST "label");
 		if (!label)
 			label = g_strdup(_("<missing label>"));
 	}
-	item = gtk_image_menu_item_new_with_label(label);
+	item = NULL;
 
-	icon_name = xmlGetProp(node, "icon");
-	if (icon_name)
+	icon_name = (gchar *) xmlGetProp(node, BAD_CAST "icon");
+
+	size = get_menu_icon_pixels();
+
+	if (icon_name && size > 0)
 	{
 		GtkWidget *icon = NULL;
-		GtkStockItem stock_item;
-		if (gtk_stock_lookup(icon_name, &stock_item))
-			icon = gtk_image_new_from_stock(icon_name, GTK_ICON_SIZE_MENU);
+
+		/* ".DirIcon" renders AppDir/.DirIcon directly */
+		if (strcmp(icon_name, ".DirIcon") == 0)
+		{
+			const gchar *base = app_dir ? app_dir : current_app_path;
+
+			if (base)
+			{
+				gchar *path;
+				GdkPixbuf *raw;
+
+				path = g_build_filename(base, ".DirIcon", NULL);
+				raw = gdk_pixbuf_new_from_file(path, NULL);
+				if (raw)
+				{
+					GdkPixbuf *scaled;
+
+					scaled = scale_pixbuf(raw, size, size);
+					icon = gtk_image_new_from_pixbuf(scaled);
+					g_object_unref(scaled);
+					g_object_unref(raw);
+				}
+				g_free(path);
+			}
+		}
 		else
 		{
-			GdkPixbuf* pixbuf;
-			int size;
-			gtk_icon_size_lookup(GTK_ICON_SIZE_MENU, NULL, &size);
+			GdkPixbuf *pixbuf;
+
 			pixbuf = theme_load_icon(icon_name, size, 0, NULL);
 			if (pixbuf)
 			{
 				icon = gtk_image_new_from_pixbuf(pixbuf);
 				g_object_unref(pixbuf);
 			}
+			else
+			{
+				/* [20260908052713] Allow only _this_ deprecated use:
+				 * gtk_stock_lookup, gtk_image_new_from_stock */
+				G_GNUC_BEGIN_IGNORE_DEPRECATIONS;
+
+				GtkIconTheme *theme;
+				GtkStockItem stock;
+
+				theme = gtk_icon_theme_get_default();
+				if (theme && gtk_icon_theme_has_icon(theme,
+							icon_name))
+				{
+					icon = menu_icon_image(icon_name);
+				}
+				else if (gtk_stock_lookup(icon_name, &stock))
+				{
+					/* [20260929195006]: ->[20260830082750]
+					 * GTK3's discrete stock sizes match our
+					 * (16,23,32) menu-size tiers exactly.
+					 */
+					GtkIconSize stock_size =
+						GTK_ICON_SIZE_MENU;
+
+					if (size >= 32)
+					{
+						stock_size =
+							GTK_ICON_SIZE_DIALOG;
+					}
+					else if (size > 16)
+					{
+						stock_size =
+						GTK_ICON_SIZE_LARGE_TOOLBAR;
+					}
+					icon = gtk_image_new_from_stock(
+							icon_name,
+							stock_size);
+				}
+				else
+				{
+					icon = menu_icon_image("image-missing");
+				}
+
+				G_GNUC_END_IGNORE_DEPRECATIONS;
+			}
 		}
 		g_free(icon_name);
 		if (icon)
-			gtk_image_menu_item_set_image(GTK_IMAGE_MENU_ITEM(item),
-						      GTK_WIDGET(icon));
+		{
+			item = menu_item_new_with_image(label, icon);
+		}
+	}
+
+	if (!item)
+	{
+		item = gtk_menu_item_new_with_label(label);
 	}
 
 	gtk_widget_set_accel_path(item, NULL, NULL);	/* XXX */
@@ -241,7 +429,7 @@ static GtkWidget *create_menu_item(xmlNode *node)
 		/* Add submenu items */
 
 		gtk_menu_item_set_submenu(GTK_MENU_ITEM(item),
-					  appmenu_add_submenu(node));
+					  appmenu_add_submenu(node, app_dir));
 	}
 	else
 	{
@@ -267,7 +455,7 @@ static GtkWidget *create_menu_item(xmlNode *node)
 /* Function called to execute an AppMenu item */
 static void apprun_menu(GtkWidget *item, gpointer data)
 {
-	guchar	*option;
+	gchar	*option;
 	gchar *argv[3];
 
 	g_return_if_fail(current_app_path != NULL);
@@ -300,39 +488,43 @@ static void mnt_eject(GtkWidget *item, gpointer data)
 	g_list_free(dirs);
 }
 
-static void customise_type(GtkWidget *item, MIME_type *type)
+/* When 'track' is FALSE the built widgets are left out of current_items.
+ * The caller owns a parent that cascades destroy (see appmenu_add).
+ */
+static void build_menu_for_type(GList *paths, MIME_type *type, GList **items, gboolean track)
 {
-	char *leaf;
-	char *path;
-
-	leaf = g_strconcat(".", type->media_type ?: "all",
-			type->subtype ? "_" : NULL, type->subtype, NULL);
-	path = choices_find_xdg_path_save(leaf, "SendTo", SITE, TRUE);
-	g_free(leaf);
-
-	mkdir(path, 0755);
-	filer_opendir(path, NULL, NULL, FALSE);
-	g_free(path);
-
-	info_message(_("Symlink any programs you want into this directory. "
-			"They will appear in the menu for all items of this "
-			"type (%s/%s)."), type->media_type ?: "*", type->subtype ?: "*");
-}
-
-static void build_menu_for_type(GList *paths, MIME_type *type)
-{
-	if (!paths) return;
 	GtkWidget *item;
+	GList *widgets, *next;
 
-	GList *widgets = menu_sendto_for_type(paths, type);
-	widgets = g_list_reverse(widgets);
-	current_items = g_list_concat(widgets, current_items);
+	if (!paths)
+		return;
 
-	item = gtk_menu_item_new_with_label(_("Customise Menu..."));
-	current_items = g_list_prepend(current_items, item);
-	g_signal_connect(item, "activate", G_CALLBACK(customise_type), type);
+	widgets = menu_sendto_for_type(paths, type, TRUE);
+	for (next = widgets; next; next = next->next)
+	{
+		GtkWidget *w = GTK_WIDGET(next->data);
+		show_sendto_tree(w);
+		*items = g_list_append(*items, w);
+		if (track)
+		{
+			current_items = g_list_prepend(current_items, w);
+		}
+	}
+	g_list_free(widgets);
 
+	/* Single scope-aware Customise entry; the scope outlives the
+	 * menu_selection_type() static via the closure [20260911082953]. */
+	item = menu_placeholder_item(_("Customise..."));
 	gtk_widget_show(item);
+	*items = g_list_append(*items, item);
+	if (track)
+	{
+		current_items = g_list_prepend(current_items, item);
+	}
+	g_signal_connect_data(item, "activate",
+			G_CALLBACK(customise_send_to_item),
+			make_sendto_scope(type),
+			(GClosureNotify) sendto_scope_free, 0);
 }
 
 static inline gboolean is_dir(const char *dir)
@@ -342,12 +534,12 @@ static inline gboolean is_dir(const char *dir)
 }
 
 /* Adds to current_items */
-static gboolean build_app_menu(const char *app_dir, DirItem *app_item)
+static gboolean build_app_menu(const char *app_dir, DirItem *app_item, GList **items)
 {
 	XMLwrapper	*ai = NULL;
-	xmlNode	*node;
-	GtkWidget *item;
-	char *help_dir;
+	xmlNode		*node;
+	GtkWidget	*item;
+	char		*help_dir;
 
 	ai = appinfo_get(app_dir, app_item);
 	if (ai)
@@ -370,20 +562,24 @@ static gboolean build_app_menu(const char *app_dir, DirItem *app_item)
 	/* Add the menu entries */
 	for (; node; node = node->next)
 	{
-		item = create_menu_item(node);
+		item = create_menu_item(node, app_dir);
 
 		if (item)
+		{
+			*items = g_list_append(*items, item);
 			current_items = g_list_prepend(current_items, item);
+		}
 	}
 
 	help_dir = g_build_filename(app_dir, "Help", NULL);
 	if (is_dir(help_dir))
 	{
-		item = gtk_image_menu_item_new_from_stock(GTK_STOCK_HELP, NULL);
+		item = menu_item_new_named_image(_("Help"), "help-browser");
 		gtk_widget_show(item);
+		*items = g_list_append(*items, item);
 		current_items = g_list_prepend(current_items, item);
 		g_signal_connect(item, "activate", G_CALLBACK(show_app_help), NULL);
-		gtk_label_set_text(GTK_LABEL(GTK_BIN(item)->child), _("Help"));
+		gtk_label_set_text(GTK_LABEL(gtk_bin_get_child(GTK_BIN(item))), _("Help"));
 	}
 	g_free(help_dir);
 

@@ -1,6 +1,7 @@
 /*
  * ROX-Filer, filer for the ROX desktop project
  * Copyright (C) 2006, Thomas Leonard and others (see changelog for details).
+ * Copyright (C) 2026, step <step.commons@gmail.com>.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the Free
@@ -938,7 +939,7 @@ static Eval *parse_eval(const gchar **expression)
 	eval = g_new(Eval, 1);
 	eval->calc = &get_constant;
 	eval->free = &free_constant;
-	eval->data1 = g_memdup(&value, sizeof(value));
+	eval->data1 = g_memdup2(&value, sizeof(value));
 
 	SKIP;
 	if (MATCH(_("Ago")))

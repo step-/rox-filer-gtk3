@@ -9,18 +9,18 @@
 #include <gtk/gtk.h>
 
 typedef void OptionNotify(void);
-typedef GList * (*OptionBuildFn)(Option *option, xmlNode *node, guchar *label);
+typedef GList * (*OptionBuildFn)(Option *option, xmlNode *node, gchar *label);
 
 struct _Option {
-	guchar		*value;
+	gchar		*value;
 	long		int_value;
 	gboolean	has_changed;
 
-	guchar		*backup;	/* Copy of value to Revert to */
+	gchar		*backup;	/* Copy of value to Revert to */
 
 	GtkWidget	*widget;		/* NULL => No UI yet */
 	void		(*update_widget)(Option *option);
-	guchar *	(*read_widget)(Option *option);
+	gchar *	(*read_widget)(Option *option);
 };
 
 /* Prototypes */
@@ -37,9 +37,9 @@ void options_notify(void);
 void option_add_notify(OptionNotify *callback);
 void option_add_saver(OptionNotify *callback);
 GList *build_numentry_base(Option *option, xmlNode *node,
-				  guchar *label, GtkAdjustment *adj);
+				  gchar *label, GtkAdjustment *adj);
 GList *options_build_menu(
-		Option *option, guchar *label, GPtrArray *names, GPtrArray *values);
+		Option *option, gchar *label, GPtrArray *names, GPtrArray *values);
 
 GtkWidget *options_show(void);
 

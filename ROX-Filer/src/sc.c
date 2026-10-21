@@ -1,6 +1,7 @@
 /*
  * ROX-Filer, filer for the ROX desktop project
  * Copyright (C) 2006, Thomas Leonard and others (see changelog for details).
+ * Copyright (C) 2026, step <step.commons@gmail.com>.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the Free
@@ -56,7 +57,7 @@ static SmPropValue *make_card_value(gchar val)
 {
 	SmPropValue *value = g_new(SmPropValue, 1);
 
-	value->value = g_memdup(&val, sizeof(gchar));
+	value->value = g_memdup2(&val, sizeof(gchar));
 	value->length = 1;
 
 	return value;
@@ -104,16 +105,16 @@ static void close_connection()
 /* Called when there's data to be read on the ICE file descriptor.
    Unpacks the message and triggers the correct callback... I think */
 
-static void poll_ice_messages(gpointer data, gint source,
-				GdkInputCondition condition)
+static gboolean poll_ice_messages(GIOChannel *source,
+				GIOCondition condition, gpointer user_data)
 {
-	SmClient *client = (SmClient *)data;
+	SmClient *client = (SmClient *)user_data;
 	Bool ret;
 
 	if (IceProcessMessages(client->ice_conn, NULL, &ret) ==
 			IceProcessMessagesIOError)
 		SmcCloseConnection(client->conn, 0, NULL);
-	return;
+	return TRUE;
 }
 
 /* Called whenever an ICE connection is opened or closed */
@@ -130,7 +131,7 @@ static void ice_watch_fn(IceConn conn, IcePointer client_data,
 #endif
        		client->fd = IceConnectionNumber(conn);
        		fcntl(client->fd, F_SETFD, FD_CLOEXEC);
-		client->input_tag = gdk_input_add(client->fd, GDK_INPUT_READ, &poll_ice_messages, client);
+		client->input_tag = g_io_add_watch(g_io_channel_unix_new(client->fd), G_IO_IN, poll_ice_messages, client);
 	}
 	else
 	{
@@ -139,7 +140,7 @@ static void ice_watch_fn(IceConn conn, IcePointer client_data,
 #ifdef DEBUG
 			g_printerr("Ice connection closed for id %s\n", client->id);
 #endif
-        		gdk_input_remove(client->input_tag);
+        		g_source_remove(client->input_tag);
 			sc_destroy(client);
 		}
 	}
@@ -399,7 +400,6 @@ gboolean sc_connect(SmClient *client)
 	client->id = g_strdup(client_id_ret);
 	client->conn = conn;
 	client->ice_conn = SmcGetIceConnection(conn);
-	gdk_set_sm_client_id(client->id);
 	XFree(client_id_ret);
 
 	client_exit = client;

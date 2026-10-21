@@ -1,6 +1,7 @@
 /*
  * ROX-Filer, filer for the ROX desktop project
  * Copyright (C) 2006, Thomas Leonard and others (see changelog for details).
+ * Copyright (C) 2026, step <step.commons@gmail.com>.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the Free
@@ -38,23 +39,33 @@
 #include "pixmaps.h"
 #include "dnd.h"
 #include "bind.h"
+#include "view_utils.h"
+#include "css.h"
 #include "gui_support.h"
 #include "main.h"
 #include "menu.h"
 #include "options.h"
 #include "cell_icon.h"
 #include "choices.h"
+#include "collection.h"
 
 static gpointer parent_class = NULL;
+static GtkWidgetClass *gtk_container_parent_class = NULL;
+
+typedef enum {
+	LASSO_SET,
+	LASSO_INVERT
+} LassoFunction;
 
 struct _ViewDetailsClass {
 	GtkTreeViewClass parent;
 };
 
 /* Static prototypes */
-static void view_details_finialize(GObject *object);
+static void view_details_finalize(GObject *object);
 static void view_details_class_init(gpointer gclass, gpointer data);
 static void view_details_init(GTypeInstance *object, gpointer gclass);
+static void view_details_style_updated(GtkWidget *widget);
 
 static void view_details_iface_init(gpointer giface, gpointer iface_data);
 
@@ -113,43 +124,107 @@ static void free_view_item(ViewItem *view_item);
 static void details_update_header_visibility(ViewDetails *view_details);
 static void set_lasso(ViewDetails *view_details, int x, int y);
 static void cancel_wink(ViewDetails *view_details);
+static gboolean get_icon_view_bg(GtkStyleContext *ctx, GdkRGBA *bg);
+
+
+/* Resolve the background colour the Icon view paints (theme_bg_color).
+ * Returns TRUE on success, leaving the colour in 'bg'. */
+static gboolean get_icon_view_bg(GtkStyleContext *ctx, GdkRGBA *bg)
+{
+	/* The Icon view paints the theme_bg_color, so resolve the same
+	 * color for the List view.
+	 *
+	 * Note: gtk_style_context_get() for "background-color" writes
+	 * only the red channel on GTK 3.24 (the rest of the GdkRGBA is
+	 * left untouched), so the colour is resolved via the theme's
+	 * @define-color map instead. */
+	return gtk_style_context_lookup_color(ctx, "theme_bg_color", bg);
+}
 
 
 static void setcolour(ViewDetails *view_details)
 {
 	FilerWindow *fw = view_details->filer_window;
 
-	GtkStyle *style = fw->window->style;
-	gtk_widget_modify_base(GTK_WIDGET(view_details),
-			GTK_STATE_ACTIVE, &style->base[fw->selection_state]);
-	gtk_widget_modify_text(GTK_WIDGET(view_details),
-			GTK_STATE_ACTIVE, &style->text[fw->selection_state]);
+	GtkStyleContext *ctx = gtk_widget_get_style_context(fw->window);
+	GdkRGBA sel_base, sel_text, act_base, act_text;
 
-	if (o_use_background_colour.int_value ||
-			o_display_colour_types.int_value)
+	gtk_style_context_save(ctx);
+
+	view_utils_get_selection_color(ctx, GTK_STATE_FLAG_SELECTED, &sel_base);
+	if (!view_utils_get_selection_fg(ctx, GTK_STATE_FLAG_SELECTED, &sel_text))
 	{
-		GdkColor base;
-		if (o_use_background_colour.int_value)
-			gdk_color_parse(o_background_colour.value, &base);
-		else if (o_display_colour_types.int_value)
-		{
-			GdkColor fc = type_colours[TYPE_FILE];
-			base.red   = 65535 - fc.red;
-			base.green = 65535 - fc.green;
-			base.blue  = 65535 - fc.blue;
-		}
-
-		gtk_widget_modify_base(GTK_WIDGET(view_details),
-				GTK_STATE_NORMAL, &base);
-		gtk_widget_modify_text(GTK_WIDGET(view_details),
-				GTK_STATE_NORMAL, &type_colours[TYPE_FILE]);
-	} else {
-		GtkStyle *style = view_details->filer_window->window->style;
-		gtk_widget_modify_base(GTK_WIDGET(view_details),
-				GTK_STATE_NORMAL, &style->base[GTK_STATE_NORMAL]);
-		gtk_widget_modify_text(GTK_WIDGET(view_details),
-				GTK_STATE_NORMAL, &style->text[GTK_STATE_NORMAL]);
+		gtk_style_context_set_state(ctx, GTK_STATE_FLAG_SELECTED);
+		gtk_style_context_get_color(ctx, GTK_STATE_FLAG_SELECTED, &sel_text);
 	}
+
+	view_utils_get_selection_color(ctx, GTK_STATE_FLAG_ACTIVE, &act_base);
+	if (!view_utils_get_selection_fg(ctx, GTK_STATE_FLAG_ACTIVE, &act_text))
+	{
+		gtk_style_context_set_state(ctx, GTK_STATE_FLAG_ACTIVE);
+		gtk_style_context_get_color(ctx, GTK_STATE_FLAG_ACTIVE, &act_text);
+	}
+
+	gtk_style_context_restore(ctx);
+
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+	gtk_widget_override_background_color(GTK_WIDGET(view_details),
+			GTK_STATE_FLAG_ACTIVE, &act_base);
+	gtk_widget_override_color(GTK_WIDGET(view_details),
+			GTK_STATE_FLAG_ACTIVE, &act_text);
+
+	/* SELECTED background/foreground via widget override, not CSS.
+	 * CSS rules like "treeview.view:selected { background-color: ... }"
+	 * do not take effect — the per-widget cascade (modifier style at
+	 * APPLICATION priority) blocks the screen cascade (CSS providers
+	 * at APPLICATION priority) even when the modifier style has no
+	 * matching entry for SELECTED.
+	 */
+	gtk_widget_override_background_color(GTK_WIDGET(view_details),
+			GTK_STATE_FLAG_SELECTED, &sel_base);
+	gtk_widget_override_color(GTK_WIDGET(view_details),
+			GTK_STATE_FLAG_SELECTED, &sel_text);
+
+	/* NORMAL background: use CSS provider, not widget override.
+	 * gtk_widget_override_background_color(NORMAL) uses state=0 which
+	 * acts as a wildcard, blocking the SELECTED override above.
+	 */
+	if (o_use_background_colour.int_value)
+	{
+		GdkRGBA base;
+		gdk_rgba_parse(&base, (const gchar *) o_background_colour.value);
+
+		css_set_list_bg(&base);
+		gtk_style_context_add_class(
+				gtk_widget_get_style_context(GTK_WIDGET(view_details)),
+				"rox-custom-bg");
+		gtk_widget_override_color(GTK_WIDGET(view_details),
+				GTK_STATE_FLAG_NORMAL, &type_colours[TYPE_FILE]);
+	} else {
+		GdkRGBA base = { 1.0, 1.0, 1.0, 1.0 };
+		gboolean resolved = get_icon_view_bg(ctx, &base);
+
+		if (resolved)
+		{
+			/* Opaque background matching the Icon view's
+			 * default (or the window background), so the
+			 * desktop cannot bleed through the tree view. */
+			base.alpha = 1.0;
+			css_set_list_bg(&base);
+			gtk_style_context_add_class(
+					gtk_widget_get_style_context(GTK_WIDGET(view_details)),
+					"rox-custom-bg");
+		}
+		else
+		{
+			css_set_list_bg(NULL);
+			gtk_style_context_remove_class(
+					gtk_widget_get_style_context(GTK_WIDGET(view_details)),
+					"rox-custom-bg");
+		}
+	}
+#pragma GCC diagnostic pop
 }
 
 
@@ -162,11 +237,12 @@ GtkWidget *view_details_new(FilerWindow *filer_window)
 	ViewDetails *view_details;
 
 	view_details = g_object_new(view_details_get_type(), NULL);
+	gtk_widget_set_name(GTK_WIDGET(view_details), "rox-list-view");
 	view_details->filer_window = filer_window;
 	setcolour(view_details);
 
 	gtk_range_set_adjustment(GTK_RANGE(filer_window->scrollbar),
-		gtk_tree_view_get_vadjustment(GTK_TREE_VIEW(view_details)));
+		gtk_scrollable_get_vadjustment(GTK_SCROLLABLE(view_details)));
 
 	if (filer_window->sort_type != SORT_UNKNOWN)
 		view_details_sort((ViewIface *) view_details);
@@ -249,7 +325,7 @@ static GType details_get_column_type(GtkTreeModel *tree_model, gint index)
 	g_return_val_if_fail(index < N_COLUMNS && index >= 0, G_TYPE_INVALID);
 
 	if (index == COL_COLOUR)
-		return GDK_TYPE_COLOR;
+		return GDK_TYPE_RGBA;
 	else if (index == COL_ITEM || index == COL_ICON)
 		return G_TYPE_POINTER;
 	else if (index == COL_WEIGHT)
@@ -334,7 +410,7 @@ static void details_get_value(GtkTreeModel *tree_model,
 		g_value_init(value, type);
 		if (type == G_TYPE_STRING)
 			g_value_set_string(value, "");
-		else if (type == GDK_TYPE_COLOR)
+		else if (type == GDK_TYPE_RGBA)
 			g_value_set_boxed(value, NULL);
 		else if (type == G_TYPE_INT)
 			g_value_set_int(value, PANGO_WEIGHT_NORMAL);
@@ -352,13 +428,14 @@ static void details_get_value(GtkTreeModel *tree_model,
 			g_value_set_string(value, item->leafname);
 			break;
 		case COL_COLOUR:
-			g_value_init(value, GDK_TYPE_COLOR);
+			g_value_init(value, GDK_TYPE_RGBA);
 			if (view_item->utf8_name)
 			{
-				GdkColor red;
-				red.red = 0xffff;
+				GdkRGBA red;
+				red.red = 1.0;
 				red.green = 0;
 				red.blue = 0;
+				red.alpha = 1.0;
 				g_value_set_boxed(value, &red);
 			}
 			else
@@ -642,6 +719,7 @@ static gboolean view_details_scroll(GtkWidget *widget, GdkEventScroll *event)
 {
 	GtkTreeView *tree = (GtkTreeView *) widget;
 	GtkTreePath *path = NULL;
+	static gdouble smooth_accum = 0.0;
 
 	if (!gtk_tree_view_get_path_at_pos(tree, 0, 1, &path, NULL, NULL, NULL))
 		return TRUE;	/* Empty? */
@@ -650,6 +728,28 @@ static gboolean view_details_scroll(GtkWidget *widget, GdkEventScroll *event)
 		gtk_tree_path_prev(path);
 	else if (event->direction == GDK_SCROLL_DOWN)
 		gtk_tree_path_next(path);
+	else if (event->direction == GDK_SCROLL_SMOOTH)
+	{
+		smooth_accum += event->delta_y;
+		if (smooth_accum >= 1.0)
+		{
+			while (smooth_accum >= 1.0)
+			{
+				gtk_tree_path_next(path);
+				smooth_accum -= 1.0;
+			}
+		}
+		else if (smooth_accum <= -1.0)
+		{
+			while (smooth_accum <= -1.0)
+			{
+				gtk_tree_path_prev(path);
+				smooth_accum += 1.0;
+			}
+		}
+		else
+			goto out;
+	}
 	else
 		goto out;
 
@@ -661,27 +761,13 @@ out:
 
 static gint view_details_key_press(GtkWidget *widget, GdkEventKey *event)
 {
-	if (event->keyval == GDK_Up || event->keyval == GDK_Down ||
+	if (event->keyval == GDK_KEY_Up || event->keyval == GDK_KEY_Down ||
 		event->keyval == GDK_KEY_KP_Up || event->keyval == GDK_KEY_KP_Down ||
-	    event->keyval == GDK_Prior || event->keyval == GDK_Next ||
-		event->keyval == GDK_Home || event->keyval == GDK_End ||
-		event->keyval == GDK_KEY_KP_Home || event->keyval == GDK_KEY_KP_End) {
-		/* Work around a strange GTK bug that prevents you from moving the cursor
-		 * if nothing is selected.
-		 */
-		if (event->state & GDK_CONTROL_MASK)
-		{
-			return GTK_WIDGET_CLASS(parent_class)->key_press_event(widget, event);
-		}
-		else
-		{
-			/* GTK hard-codes the test for CTRL, and won't move the cursor
-			 * if it isn't set.
-			 */
-			event->state |= GDK_CONTROL_MASK;
-			gtk_propagate_event(widget, (GdkEvent *) event);
-			return TRUE;
-		}
+	    event->keyval == GDK_KEY_Page_Up || event->keyval == GDK_KEY_Page_Down ||
+		event->keyval == GDK_KEY_Home || event->keyval == GDK_KEY_End ||
+		event->keyval == GDK_KEY_KP_Home || event->keyval == GDK_KEY_KP_End)
+	{
+		return GTK_WIDGET_CLASS(parent_class)->key_press_event(widget, event);
 	}
 	return FALSE;
 }
@@ -748,7 +834,7 @@ static gboolean select_lasso_cb(ViewIter *iter, gpointer data)
 {
 	int start = ((int *) data)[0];
 	int end = ((int *) data)[1];
-	GdkFunction fn = ((int *) data)[2];
+	LassoFunction fn = ((int *) data)[2];
 	ViewDetails *view_details = (ViewDetails *) iter->view;
 	GtkTreeIter  titer;
 
@@ -758,23 +844,23 @@ static gboolean select_lasso_cb(ViewIter *iter, gpointer data)
 		return gtk_tree_selection_iter_is_selected(
 				view_details->selection, &titer);
 
-	if (fn == GDK_SET)
+	if (fn == LASSO_SET)
 		return TRUE;
 
 	return !gtk_tree_selection_iter_is_selected(view_details->selection,
 						    &titer);
 }
 
-static void select_lasso(ViewDetails *view_details, GdkFunction fn)
+static void select_lasso(ViewDetails *view_details, LassoFunction fn)
 {
 	GtkAdjustment	*adj;
 	int range[3];
 
-	adj = gtk_tree_view_get_vadjustment((GtkTreeView *) view_details);
+	adj = gtk_scrollable_get_vadjustment(GTK_SCROLLABLE(view_details));
 
 	range[0] = view_details->lasso_start_index;
-	range[1] = get_lasso_index(view_details,
-			      view_details->drag_box_y[1] - adj->value);
+		range[1] = get_lasso_index(view_details,
+			      view_details->drag_box_y[1] - gtk_adjustment_get_value(adj));
 	range[2] = fn;
 
 	if (range[0] == range[1])
@@ -806,7 +892,7 @@ static gboolean view_details_button_release(GtkWidget *widget,
 	if (motion_buttons_pressed == 0 && view_details->lasso_box)
 	{
 		select_lasso(view_details,
-				bev->button == 1 ? GDK_SET : GDK_INVERT);
+				bev->button == 1 ? LASSO_SET : LASSO_INVERT);
 		filer_set_autoscroll(filer_window, FALSE);
 		set_lasso(view_details,
 			  view_details->drag_box_x[0],
@@ -829,30 +915,59 @@ static gint view_details_motion_notify(GtkWidget *widget, GdkEventMotion *event)
 	if (view_details->lasso_box)
 	{
 		GtkAdjustment	*adj;
-		adj = gtk_tree_view_get_vadjustment(tree);
-		set_lasso(view_details, event->x, event->y + adj->value);
+		adj = gtk_scrollable_get_vadjustment(GTK_SCROLLABLE(tree));
+		set_lasso(view_details, event->x, event->y + gtk_adjustment_get_value(adj));
 		return TRUE;
 	}
 
 	return filer_motion_notify(view_details->filer_window, event);
 }
 
-static gboolean view_details_expose(GtkWidget *widget, GdkEventExpose *event)
+static gboolean view_details_expose(GtkWidget *widget, cairo_t *cr)
 {
 	GtkTreeView *tree = (GtkTreeView *) widget;
 	GtkTreePath *path = NULL;
 	GdkRectangle focus_rectangle;
 	ViewDetails *view_details = (ViewDetails *) widget;
 	ViewDetails *view = view_details;
+	gint bin_x, bin_y;
 
-	GTK_WIDGET_CLASS(parent_class)->expose_event(widget, event);
+	css_check_theme_once(widget);
+	type_adapt_default_colours(gtk_widget_get_style_context(widget));
 
-	if (event->window != gtk_tree_view_get_bin_window(tree))
-		return FALSE;	/* Not the main area */
+	/* Paint the widget background BEFORE the parent class draw.
+	 * GtkTreeView's pixel cache clears dirty regions to fully
+	 * transparent (alpha=0) before repainting. If the repaint
+	 * doesn't cover everything, transparent holes appear and
+	 * whatever is behind the widget bleeds through. By painting
+	 * the background first, we ensure there's always opaque
+	 * content underneath, even if the pixel cache has gaps.
+	 *
+	 * We paint opaque white directly instead of using the CSS
+	 * background because gtk_style_context_get_background_color()
+	 * returns transparent during DnD: gtk_drag_highlight() sets
+	 * GTK_STATE_FLAG_DROP_ACTIVE on the widget, and the CSS
+	 * engine transitions background-color to transparent.
+	 * gtk_render_background() with forced NORMAL state also fails
+	 * because the CSS style is cached and ignores the override.
+	 */
+	{
+		cairo_save(cr);
+		cairo_set_operator(cr, CAIRO_OPERATOR_SOURCE);
+		/* TODO: match this color with the theme bg color for this widget */
+		cairo_set_source_rgba(cr, 1.0, 1.0, 1.0, 1.0);
+		cairo_paint(cr);
+		cairo_restore(cr);
+	}
+
+	GTK_WIDGET_CLASS(parent_class)->draw(widget, cr);
+
+	gdk_window_get_position(gtk_tree_view_get_bin_window(tree), &bin_x, &bin_y);
 
 	if (view->filer_window->directory->error)
 	{
-		cairo_t *cr = gdk_cairo_create(event->window);
+		cairo_save(cr);
+		cairo_translate(cr, bin_x, bin_y);
 		cairo_set_operator(cr, CAIRO_OPERATOR_SOURCE);
 		cairo_set_source_rgba(cr, 0.9, .0, .0, 1);
 		cairo_paint(cr);
@@ -862,17 +977,19 @@ static gboolean view_details_expose(GtkWidget *widget, GdkEventExpose *event)
 		cairo_select_font_face(cr, "sans-serif", 0, CAIRO_FONT_WEIGHT_BOLD);
 		cairo_move_to(cr, 2, small_height * 3/4.);
 		cairo_show_text(cr, view->filer_window->directory->error);
-
-		cairo_destroy(cr);
+		cairo_restore(cr);
 		return TRUE;
 	}
+
+	cairo_save(cr);
+	cairo_translate(cr, bin_x, bin_y);
 
 	if (view_details->lasso_box)
 	{
 		int x, y, width, height;
 		GtkAdjustment *adj;
 
-		adj = gtk_tree_view_get_vadjustment(tree);
+		adj = gtk_scrollable_get_vadjustment(GTK_SCROLLABLE(tree));
 		x = MIN(view_details->drag_box_x[0],
 				view_details->drag_box_x[1]);
 		y = MIN(view_details->drag_box_y[0],
@@ -881,12 +998,15 @@ static gboolean view_details_expose(GtkWidget *widget, GdkEventExpose *event)
 				view_details->drag_box_x[0]);
 		height = abs(view_details->drag_box_y[1] -
 				view_details->drag_box_y[0]);
-		y -= adj->value;
+		y -= gtk_adjustment_get_value(adj);
+		if (y < 0)
+		{
+			height += y;
+			y = 0;
+		}
 
 		if (width && height)
-			gdk_draw_rectangle(event->window,
-				widget->style->text_gc[GTK_STATE_NORMAL],
-				FALSE, x, y, width - 1, height - 1);
+			view_utils_draw_rubberband(widget, cr, x, y, width, height);
 	}
 
 	if (view_details->wink_item != -1 && view_details->wink_step & 1)
@@ -902,54 +1022,93 @@ static gboolean view_details_expose(GtkWidget *widget, GdkEventExpose *event)
 
 		if (wink_area.height)
 		{
-			/* (visible) */
-			wink_area.width = widget->allocation.width;
-			gdk_draw_rectangle(event->window,
-				widget->style->fg_gc[GTK_STATE_NORMAL],
-					FALSE,
-					wink_area.x + 1,
-					wink_area.y + 1,
-					wink_area.width - 3,
-					wink_area.height - 3);
+			GtkAllocation alloc;
+			GtkStyleContext *ctx;
+
+			gtk_widget_get_allocation(widget, &alloc);
+			wink_area.width = alloc.width;
+			ctx = gtk_widget_get_style_context(widget);
+			gtk_style_context_save(ctx);
+			gtk_style_context_set_state(ctx,
+				gtk_widget_get_state_flags(widget));
+			gtk_render_focus(ctx, cr,
+					wink_area.x, wink_area.y,
+					wink_area.width, wink_area.height);
+			gtk_style_context_restore(ctx);
 		}
 	}
 
 	gtk_tree_view_get_cursor(tree, &path, NULL);
 	if (!path)
+	{
+		cairo_restore(cr);
 		return FALSE;	/* No cursor */
+	}
 	gtk_tree_view_get_background_area(tree, path, NULL, &focus_rectangle);
 	gtk_tree_path_free(path);
 
 	if (!focus_rectangle.height)
+	{
+		cairo_restore(cr);
 		return FALSE;	/* Off screen */
+	}
 
-	focus_rectangle.width = widget->allocation.width;
+	{
+		GtkAllocation alloc;
+		gtk_widget_get_allocation(widget, &alloc);
+		focus_rectangle.width = alloc.width;
+	}
 
-	gtk_paint_focus(widget->style,
-			event->window,
-			GTK_STATE_NORMAL,
-			NULL,
-			widget,
-			"treeview",
-			focus_rectangle.x,
-			focus_rectangle.y,
-			focus_rectangle.width,
-			focus_rectangle.height);
+	GtkWidget *toplevel = gtk_widget_get_toplevel(widget);
+	if (gtk_widget_has_focus(widget) &&
+			GTK_IS_WINDOW(toplevel) &&
+			gtk_window_has_toplevel_focus(GTK_WINDOW(toplevel)))
+	{
+		GtkStyleContext *ctx = gtk_widget_get_style_context(widget);
+		gtk_style_context_save(ctx);
+		gtk_style_context_set_state(ctx,
+					    gtk_widget_get_state_flags(widget));
+		gtk_render_focus(ctx, cr,
+				focus_rectangle.x,
+				focus_rectangle.y,
+				focus_rectangle.width,
+				focus_rectangle.height);
+		gtk_style_context_restore(ctx);
+	}
+
+	cairo_restore(cr);
 
 	return FALSE;
 }
 
-static void view_details_size_request(GtkWidget *widget,
-				      GtkRequisition *requisition)
+static void view_details_get_preferred_width(GtkWidget *widget,
+					     gint *minimal_width,
+					     gint *natural_width)
 {
 	ViewDetails *view_details = (ViewDetails *) widget;
+	gint min_w, nat_w;
 
-	(*GTK_WIDGET_CLASS(parent_class)->size_request)(widget, requisition);
+	GTK_WIDGET_CLASS(parent_class)->get_preferred_width(widget, &min_w, &nat_w);
 
-	view_details->desired_size = *requisition;
+	view_details->desired_size.width = min_w;
 
-	requisition->height = 50;
-	requisition->width = 50;
+	*minimal_width = 50;
+	*natural_width = 50;
+}
+
+static void view_details_get_preferred_height(GtkWidget *widget,
+					      gint *minimal_height,
+					      gint *natural_height)
+{
+	ViewDetails *view_details = (ViewDetails *) widget;
+	gint min_h, nat_h;
+
+	GTK_WIDGET_CLASS(parent_class)->get_preferred_height(widget, &min_h, &nat_h);
+
+	view_details->desired_size.height = min_h;
+
+	*minimal_height = 50;
+	*natural_height = 50;
 }
 
 static void view_details_drag_data_received(GtkWidget *widget,
@@ -959,17 +1118,17 @@ static void view_details_drag_data_received(GtkWidget *widget,
 	/* Just here to override annoying default handler */
 }
 
-static void view_details_destroy(GtkObject *obj)
+static void view_details_destroy(GtkWidget *widget)
 {
-	ViewDetails *view_details = VIEW_DETAILS(obj);
+	ViewDetails *view_details = VIEW_DETAILS(widget);
 
 	view_details->filer_window = NULL;
 	cancel_wink(view_details);
 
-	(*GTK_OBJECT_CLASS(parent_class)->destroy)(obj);
+	GTK_WIDGET_CLASS(parent_class)->destroy(widget);
 }
 
-static void view_details_finialize(GObject *object)
+static void view_details_finalize(GObject *object)
 {
 	ViewDetails *view_details = (ViewDetails *) object;
 
@@ -983,24 +1142,39 @@ static void view_details_finialize(GObject *object)
 	G_OBJECT_CLASS(parent_class)->finalize(object);
 }
 
+static void view_details_style_updated(GtkWidget *widget)
+{
+	/*
+	 * Skip GtkTreeView's style_updated, which marks every column dirty and
+	 * re-autosizes them when the style changes in a size-affecting way (e.g.
+	 * the :active state toggling on window focus loss/gain). ROX-Filer
+	 * re-autosizes columns explicitly via view_style_changed(), so the
+	 * default widget handler is sufficient here.
+	 */
+	gtk_container_parent_class->style_updated(widget);
+}
+
 static void view_details_class_init(gpointer gclass, gpointer data)
 {
 	GObjectClass *object = (GObjectClass *) gclass;
 	GtkWidgetClass *widget = (GtkWidgetClass *) gclass;
 
 	parent_class = g_type_class_peek_parent(gclass);
+	gtk_container_parent_class = g_type_class_peek_parent(parent_class);
 
-	object->finalize = view_details_finialize;
-	GTK_OBJECT_CLASS(object)->destroy = view_details_destroy;
+	object->finalize = view_details_finalize;
+	GTK_WIDGET_CLASS(object)->destroy = view_details_destroy;
 
 	widget->scroll_event = view_details_scroll;
 	widget->key_press_event = view_details_key_press;
 	widget->button_press_event = view_details_button_press;
 	widget->button_release_event = view_details_button_release;
 	widget->motion_notify_event = view_details_motion_notify;
-	widget->expose_event = view_details_expose;
-	widget->size_request = view_details_size_request;
+	widget->draw = view_details_expose;
+	widget->get_preferred_width = view_details_get_preferred_width;
+	widget->get_preferred_height = view_details_get_preferred_height;
 	widget->drag_data_received = view_details_drag_data_received;
+	widget->style_updated = view_details_style_updated;
 
 	/*
 	 * Add the ViewDetails::mono-font style property.
@@ -1100,7 +1274,7 @@ static void colchangedcb(GtkTreeView *tree_view, ViewDetails *view_details)
 				break;
 			}
 
-		char *path = choices_find_xdg_path_save("column_order", PROJECT, SITE, FALSE);
+		char *path = choices_find_xdg_path_save("column_order", project_name, SITE, FALSE);
 		if (path)
 		{
 			g_file_set_contents(path, colorder, COL_ITEM, NULL);
@@ -1137,7 +1311,7 @@ static void defcols(ViewDetails *view_details)
 	if (!colorder_loaded)
 	{
 		colorder_loaded = TRUE;
-		char *path = choices_find_xdg_path_load("column_order", PROJECT, SITE);
+		char *path = choices_find_xdg_path_load("column_order", project_name, SITE);
 		if (path)
 		{
 			gchar *buffer = NULL;
@@ -1166,7 +1340,7 @@ static void defcols(ViewDetails *view_details)
 static void view_details_scroll_to_top(ViewIface *view)
 {
 	gtk_adjustment_set_value(
-			gtk_tree_view_get_vadjustment((GtkTreeView *) view),
+			gtk_scrollable_get_vadjustment(GTK_SCROLLABLE(view)),
 			0);
 }
 
@@ -1175,11 +1349,11 @@ static void view_details_scroll_to_top(ViewIface *view)
 	cell = gtk_cell_renderer_text_new();	\
 	column = gtk_tree_view_column_new_with_attributes(name, cell, \
 					    "text", model_column,	\
-					    "foreground-gdk", COL_COLOUR, \
+					    "foreground-rgba", COL_COLOUR, \
 					    "weight", COL_WEIGHT, 	\
 					    NULL);			\
 	gtk_tree_view_append_column(treeview, column);			\
-	g_signal_connect(column->button, "grab-focus",			\
+	g_signal_connect(gtk_tree_view_column_get_button(column), "grab-focus", \
 			G_CALLBACK(block_focus), view_details); \
 	view_details->cols[model_column] = column; \
 	gtk_tree_view_column_set_reorderable(column, TRUE); \
@@ -1371,8 +1545,9 @@ static gint wrap_sort(gconstpointer a, gconstpointer b,
 static void resort(ViewDetails *view_details)
 {
 	ViewItem **items = (ViewItem **) view_details->items->pdata;
-	gint i, len = view_details->items->len;
-	guint *new_order;
+	gint i;
+	guint len = view_details->items->len;
+	gint *new_order;
 	GtkTreePath *path;
 	int wink_item = view_details->wink_item;
 
@@ -1401,7 +1576,7 @@ static void resort(ViewDetails *view_details)
 				   (GCompareDataFunc) wrap_sort,
 				   view_details);
 
-	new_order = g_new(guint, len);
+	new_order = g_new(gint, len);
 	for (i = len - 1; i >= 0; i--)
 	{
 		new_order[i] = items[i]->old_pos;
@@ -1673,6 +1848,36 @@ static int view_details_count_selected(ViewIface *view)
 
 static void view_details_show_cursor(ViewIface *view)
 {
+	ViewDetails *view_details = (ViewDetails *) view;
+	ViewIter iter;
+
+	if (view_details->items->len == 0)
+		return;
+
+	/* Don't reset an existing cursor back to the first row: a prior
+	 * autoselect (e.g. -s) may already have placed the keyboard cursor
+	 * on a specific item, and re-establishing it here would move the
+	 * indicator away from that item. Just ensure the view keeps focus
+	 * so the indicator is drawn. [20260910150134]
+	 */
+	if (view_details_cursor_visible(view)
+			|| view_details_count_selected(view) > 0)
+	{
+		gtk_widget_grab_focus(GTK_WIDGET(view));
+		return;
+	}
+
+	/* Establish the tree cursor at the first item (like the icon view),
+	 * making the keyboard focus indicator appear on a fresh Details view. */
+	make_iter(view_details, &iter, 0);
+	if (iter.next(&iter))
+		view_details_cursor_to_iter(view, &iter);
+
+	/* Grab focus so that the expose handler's gtk_widget_has_focus() test
+	 * passes and the indicator is drawn when the window is active.
+	 * Harmless on the other show_cursor paths: key-press navigation;
+	 * minibuffer_show (re-grabs focus to the entry afterwards). */
+	gtk_widget_grab_focus(GTK_WIDGET(view));
 }
 
 static void view_details_get_iter(ViewIface *view,
@@ -1806,10 +2011,13 @@ static void redraw_wink_area(ViewDetails *view_details)
 	if (wink_area.height)
 	{
 		GdkWindow *window;
+		GtkAllocation alloc;
+
 		window = gtk_tree_view_get_bin_window(tree);
 		if (!window) return;
 
-		wink_area.width = GTK_WIDGET(tree)->allocation.width;
+		gtk_widget_get_allocation(GTK_WIDGET(tree), &alloc);
+		wink_area.width = alloc.width;
 		gdk_window_invalidate_rect(window, &wink_area, FALSE);
 	}
 }
@@ -1824,6 +2032,10 @@ static void cancel_wink(ViewDetails *view_details)
 
 	view_details->wink_item = -1;
 	g_source_remove(view_details->wink_timeout);
+
+	gtk_style_context_remove_class(
+		gtk_widget_get_style_context(GTK_WIDGET(view_details)),
+		"wink-outline");
 }
 
 static gboolean wink_timeout(ViewDetails *view_details)
@@ -1853,6 +2065,11 @@ static void view_details_wink_item(ViewIface *view, ViewIter *iter)
 	view_details->wink_timeout = g_timeout_add(70,
 			(GSourceFunc) wink_timeout, view_details);
 	view_details->wink_step = 7;
+
+	gtk_style_context_add_class(
+		gtk_widget_get_style_context(GTK_WIDGET(view_details)),
+		"wink-outline");
+
 	redraw_wink_area(view_details);
 
 	path = gtk_tree_path_new();
@@ -1871,10 +2088,11 @@ static void view_details_autosize(ViewIface *view, gboolean turn)
 					o_filer_width_limit.int_value) * monitor_width) / 100;
 	int max_height = (o_filer_size_limit.int_value * monitor_height) / 100;
 	int h;
-	GtkRequisition req;
+	gint nat_w, nat_h;
 
 	gtk_widget_queue_resize(GTK_WIDGET(view));
-	gtk_widget_size_request(GTK_WIDGET(view), &req);
+	gtk_widget_get_preferred_width(GTK_WIDGET(view), NULL, &nat_w);
+	gtk_widget_get_preferred_height(GTK_WIDGET(view), NULL, &nat_h);
 
 	h = MAX(view_details->desired_size.height, small_height * 3);
 
@@ -1882,10 +2100,13 @@ static void view_details_autosize(ViewIface *view, gboolean turn)
 	int vw = MIN(view_details->desired_size.width, max_width);
 	int vh = MIN(h, max_height);
 	gboolean notauto = FALSE;
+	GtkAllocation alloc;
+
+	gtk_widget_get_allocation(GTK_WIDGET(view_details), &alloc);
 
 	if (turn && (vw != max_width || vh != max_height) &&
-		GTK_WIDGET(view_details)->allocation.width  == vw &&
-		GTK_WIDGET(view_details)->allocation.height == vh)
+		alloc.width  == vw &&
+		alloc.height == vh)
 	{
 		vw = max_width;
 		vh = max_height;
@@ -1950,9 +2171,9 @@ static void set_lasso(ViewDetails *view_details, int x, int y)
 	{
 		GtkAdjustment *adj;
 
-		adj = gtk_tree_view_get_vadjustment((GtkTreeView *)
-							view_details);
-		area.y -= adj->value;
+		adj = gtk_scrollable_get_vadjustment(GTK_SCROLLABLE(
+							view_details));
+		area.y -= gtk_adjustment_get_value(adj);
 		gdk_window_invalidate_rect(window, &area, FALSE);
 	}
 }
@@ -1962,7 +2183,7 @@ static void view_details_start_lasso_box(ViewIface *view, GdkEventButton *event)
 	ViewDetails *view_details = (ViewDetails *) view;
 	GtkAdjustment *adj;
 
-	adj = gtk_tree_view_get_vadjustment((GtkTreeView *) view_details);
+	adj = gtk_scrollable_get_vadjustment(GTK_SCROLLABLE(view_details));
 
 	view_details->lasso_start_index = get_lasso_index(view_details,
 							  event->y);
@@ -1971,7 +2192,7 @@ static void view_details_start_lasso_box(ViewIface *view, GdkEventButton *event)
 
 	view_details->drag_box_x[0] = view_details->drag_box_x[1] = event->x;
 	view_details->drag_box_y[0] = view_details->drag_box_y[1] = event->y +
-								adj->value;
+						gtk_adjustment_get_value(adj);
 	view_details->lasso_box = TRUE;
 }
 
@@ -2195,11 +2416,16 @@ static gboolean view_details_auto_scroll_callback(ViewIface *view)
 
 	window = gtk_tree_view_get_bin_window(tree);
 
-	gdk_window_get_pointer(window, &x, &y, &mask);
+	{
+		GdkSeat *seat = gdk_display_get_default_seat(
+				gdk_window_get_display(window));
+		GdkDevice *device = gdk_seat_get_pointer(seat);
+		gdk_window_get_device_position(window, device, &x, &y, &mask);
+	}
 	w = gdk_window_get_width(window);
 
 	adj = gtk_range_get_adjustment(scrollbar);
-	h = adj->page_size;
+	h = gtk_adjustment_get_page_size(adj);
 
 	if ((x < 0 || x > w || y < 0 || y > h) && !view_details->lasso_box)
 		return FALSE;		/* Out of window - stop */
@@ -2211,13 +2437,15 @@ static gboolean view_details_auto_scroll_callback(ViewIface *view)
 
 	if (diff)
 	{
-		int	old = adj->value;
+		int	old = gtk_adjustment_get_value(adj);
 		int	value = old + diff * AUTOSCROLL_SPEED;
 
-		value = CLAMP(value, 0, adj->upper - adj->page_size);
+		value = CLAMP(value, 0,
+				gtk_adjustment_get_upper(adj) -
+				gtk_adjustment_get_page_size(adj));
 		gtk_adjustment_set_value(adj, value);
 
-		if (adj->value != old)
+		if (gtk_adjustment_get_value(adj) != old)
 			dnd_spring_abort();
 	}
 

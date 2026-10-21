@@ -1,6 +1,7 @@
 /*
  * ROX-Filer, filer for the ROX desktop project
  * Copyright (C) 2006, Thomas Leonard and others (see changelog for details).
+ * Copyright (C) 2026, step <step.commons@gmail.com>.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the Free
@@ -42,10 +43,11 @@
 #include "choices.h"
 
 /* Static prototypes */
-static void write_data(gpointer data, gint fd, GdkInputCondition cond);
+static gboolean write_data(GIOChannel *source, GIOCondition cond,
+			   gpointer user_data);
 static gboolean follow_symlink(const char *full_path,
 					FilerWindow *fw, OpenFlags flags);
-static void open_mountpoint(const guchar *full_path, DirItem *item,
+static void open_mountpoint(const gchar *full_path, DirItem *item,
 			    FilerWindow *fw, gboolean edit, OpenFlags flags);
 static gboolean run_desktop(const char *full_path,
 			    const char **args, const char *dir);
@@ -55,7 +57,7 @@ typedef struct _PipedData PipedData;
 
 struct _PipedData
 {
-	guchar		*data;
+	gchar		*data;
 	gint		tag;
 	gulong		sent;
 	gulong		length;
@@ -193,8 +195,9 @@ void run_with_data(const char *path, gpointer data, gulong length)
 			memcpy(pd->data, data, length);
 			pd->length = length;
 			pd->sent = 0;
-			pd->tag = gdk_input_add_full(fds[1], GDK_INPUT_WRITE,
-						write_data, pd, NULL);
+		pd->tag = g_io_add_watch(g_io_channel_unix_new(fds[1]),
+					G_IO_OUT,
+					write_data, pd);
 			break;
 	}
 
@@ -288,7 +291,7 @@ static FilerWindow *open_or_change(
 		//this emits configure event
 		//gtk_window_present(GTK_WINDOW(fw->window));
 
-		gdk_window_focus(fw->window->window, 0);
+		gdk_window_focus(gtk_widget_get_window(GTK_WIDGET(fw->window)), 0);
 	}
 
 	return ret;
@@ -302,7 +305,7 @@ static FilerWindow *open_or_change(
  *
  * Returns TRUE on success.
  */
-gboolean run_diritem(const guchar *full_path,
+gboolean run_diritem(const gchar *full_path,
 		     DirItem *item,
 		     FilerWindow *fw,
 		     OpenFlags flags)
@@ -339,7 +342,7 @@ gboolean run_diritem(const guchar *full_path,
 			if (EXECUTABLE_FILE(item) && !edit)
 			{
 				const char *argv[] = {NULL, NULL};
-				guchar	*dir = fw
+				gchar	*dir = fw
 						? fw->sym_path
 						: NULL;
 
@@ -381,7 +384,7 @@ gboolean run_diritem(const guchar *full_path,
 }
 
 /* Attempt to open this item */
-gboolean run_by_path(const guchar *full_path)
+gboolean run_by_path(const gchar *full_path)
 {
 	gboolean retval;
 	DirItem	*item;
@@ -434,7 +437,7 @@ gboolean run_by_uri(const gchar *uri, gchar **errmsg)
 			tmp2=pathdup(tmp);
 			retval=run_by_path(tmp2);
 			if(!retval)
-				*errmsg=g_strdup_printf(_("%s not accessable"),
+				*errmsg=g_strdup_printf(_("%s not accessible"),
 							tmp);
 
 			g_free(tmp2);
@@ -478,6 +481,7 @@ void show_help_files(const char *dir)
 	if (file_exists(help_dir))
 		filer_opendir(help_dir, NULL, NULL, FALSE);
 	else
+		/* TRANSLATORS: see also the "App dir" msgid => "Application:" */
 		info_message(
 			_("Application:\n"
 			"This is an application directory - you can "
@@ -486,11 +490,27 @@ void show_help_files(const char *dir)
 			"their own help here, but this one doesn't."));
 }
 
+/* Open the active configuration folder [20260808205923] */
+void show_config_folder(GtkWidget *widget, gpointer user_data)
+{
+	gchar *dir;
+
+	(void) widget;
+	(void) user_data;
+
+	dir = choices_find_xdg_path_save("", project_name, SITE, TRUE);
+	if (dir)
+	{
+		filer_opendir(dir, NULL, NULL, FALSE);
+		g_free(dir);
+	}
+}
+
 /* Open a directory viewer showing this file, and wink it */
-void open_to_show(const guchar *path)
+void open_to_show(const gchar *path)
 {
 	FilerWindow	*new;
-	guchar		*dir, *slash;
+	gchar		*dir, *slash;
 
 	g_return_if_fail(path != NULL);
 
@@ -501,7 +521,10 @@ void open_to_show(const guchar *path)
 		/* Item in the root (or root itself!) */
 		new = filer_opendir("/", NULL, NULL, FALSE);
 		if (new && dir[1])
+		{
+			new->wink_after_select = TRUE;
 			display_set_autoselect(new, dir + 1);
+		}
 	}
 	else
 	{
@@ -511,6 +534,7 @@ void open_to_show(const guchar *path)
 		{
 			if (slash[1] == '.')
 				display_set_hidden(new, TRUE);
+			new->wink_after_select = TRUE;
 			display_set_autoselect(new, slash + 1);
 		}
 	}
@@ -521,7 +545,7 @@ void open_to_show(const guchar *path)
 /* Invoked using -x, this indicates that the filesystem has been modified
  * and we should look at this item again.
  */
-void examine(const guchar *path)
+void examine(const gchar *path)
 {
 	struct stat info;
 
@@ -549,9 +573,13 @@ void examine(const guchar *path)
  ****************************************************************/
 
 
-static void write_data(gpointer data, gint fd, GdkInputCondition cond)
+static gboolean write_data(GIOChannel *source, GIOCondition cond,
+			   gpointer user_data)
 {
-	PipedData *pd = (PipedData *) data;
+	PipedData *pd = (PipedData *) user_data;
+	gint fd;
+
+	fd = g_io_channel_unix_get_fd(source);
 
 	while (pd->sent < pd->length)
 	{
@@ -562,7 +590,7 @@ static void write_data(gpointer data, gint fd, GdkInputCondition cond)
 		if (sent < 0)
 		{
 			if (errno == EAGAIN)
-				return;
+				return TRUE;
 			delayed_error(_("Could not send data to program: %s"),
 					g_strerror(errno));
 			goto finish;
@@ -576,6 +604,8 @@ finish:
 	g_free(pd->data);
 	g_free(pd);
 	close(fd);
+
+	return FALSE;
 }
 
 /* Follow the link 'full_path' and display it in filer_window, or a
@@ -603,7 +633,7 @@ static gboolean follow_symlink(const char *full_path,
 	/* Make a relative path absolute */
 	if (path[0] != '/')
 	{
-		guchar	*tmp;
+		gchar	*tmp;
 		slash = strrchr(full_path, '/');
 		g_return_val_if_fail(slash != NULL, FALSE);
 
@@ -640,7 +670,7 @@ static gboolean follow_symlink(const char *full_path,
 }
 
 /* Called like run_diritem, when a mount-point is opened */
-static void open_mountpoint(const guchar *full_path, DirItem *item,
+static void open_mountpoint(const gchar *full_path, DirItem *item,
 		FilerWindow *fw, gboolean edit, OpenFlags flags)
 {
 	gboolean mounted = (item->flags & ITEM_FLAG_MOUNTED) != 0;

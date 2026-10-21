@@ -23,16 +23,20 @@ struct _Panel {
 	GtkWidget	*window;
 	GtkAdjustment	*adj;		/* Scroll position of the bar */
 	PanelSide	side;
-	guchar		*name;		/* Leaf name */
+	gchar		*name;		/* Leaf name */
 
 	GtkWidget	*before;	/* Icons at the left/top end */
 	GtkWidget	*after;		/* Icons at the right/bottom end */
 
 	GtkWidget	*gap;		/* Event box between sides */
+	GtkWidget	*vp;		/* Viewport */
+	GtkWidget	*box;		/* Inner box */
 
 	int		autoscroll_to;	/* Timeout */
 	int		autoscroll_speed; /* 0 => not scrolling */
+	int		position_corrections;   /* anti-WM positioning counter */
 	GdkRectangle	geometry;
+	int		actual_x, actual_y;	/* WM-affected actual window position */
 	/* Options */
 	int			style;		/* Possible values defined in panel.c */
 	int			width;
@@ -40,6 +44,7 @@ struct _Panel {
 	gboolean	xinerama;
 	int			monitor;
 	gboolean	avoid;
+	gboolean	show_edge;
 };
 
 extern Panel *current_panel[PANEL_NUMBER_OF_SIDES];
@@ -54,7 +59,7 @@ gboolean panel_add(PanelSide side,
 		   gboolean locked);
 gboolean panel_remove_item(PanelSide side, const gchar *path,
 			   const gchar *label);
-void panel_mark_used(GdkRegion *used);
+void panel_mark_used(cairo_region_t *used);
 void panel_update_size(void);
 
 /* Side names here are English for implementation */

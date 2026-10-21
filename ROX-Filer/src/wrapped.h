@@ -17,6 +17,8 @@ struct _WrappedLabelClass {
 struct _WrappedLabel {
 	GtkWidget widget;
 	PangoLayout *layout;
+	GdkRGBA fg_col;
+	GdkRGBA bg_col;
 	gint width, text_width;
 	int x_off, y_off;
 };
@@ -27,5 +29,6 @@ struct _WrappedLabel {
 GType wrapped_label_get_type(void);
 GtkWidget *wrapped_label_new(const char *text, gint width);
 void wrapped_label_set_text(WrappedLabel *wl, const char *text);
+void wrapped_label_set_fg_color(WrappedLabel *wl, const GdkRGBA *color);
 
 #endif /* __WRAPPED_H__ */

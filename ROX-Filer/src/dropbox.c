@@ -1,6 +1,7 @@
 /*
  * ROX-Filer, filer for the ROX desktop project
  * Copyright (C) 2006, Thomas Leonard and others (see changelog for details).
+ * Copyright (C) 2026, step <step.commons@gmail.com>.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the Free
@@ -38,7 +39,7 @@
 struct _DropBoxClass {
 	GtkFrameClass parent;
 
-	void (*path_dropped)(GtkWidget *drop_box, const guchar *path);
+	void (*path_dropped)(GtkWidget *drop_box, const gchar *path);
 	void (*clear)(GtkWidget *drop_box);
 };
 
@@ -70,8 +71,7 @@ static void drop_box_drag_data_received(GtkWidget *drop_box,
 
 GtkWidget *drop_box_new(const char *message)
 {
-	GtkWidget *button, *label, *vbox, *icon;
-	MaskedPixmap *mp;
+	GtkWidget *button, *label, *vbox;
 	DropBox *drop_box;
 	GtkTargetEntry 	targets[] = {
 		{"text/uri-list", 0, 0},
@@ -86,30 +86,32 @@ GtkWidget *drop_box_new(const char *message)
 			targets, sizeof(targets) / sizeof(*targets),
 			GDK_ACTION_COPY);
 
-	vbox = gtk_vbox_new(FALSE, 0);
+	vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
 	gtk_container_add(GTK_CONTAINER(drop_box), vbox);
 
 	label = gtk_label_new(message);
-	gtk_misc_set_padding(GTK_MISC(label), 10, 10);
+	gtk_widget_set_margin_start(label, 10);
+	gtk_widget_set_margin_end(label, 10);
+	gtk_widget_set_margin_top(label, 10);
+	gtk_widget_set_margin_bottom(label, 10);
 	gtk_box_pack_start(GTK_BOX(vbox), label, TRUE, TRUE, 0);
 
 	drop_box->label = gtk_label_new(NULL);
 	gtk_box_pack_start(GTK_BOX(vbox), drop_box->label, FALSE, TRUE, 0);
-	gtk_misc_set_padding(GTK_MISC(drop_box->label), 2, 2);
+	gtk_widget_set_margin_start(drop_box->label, 2);
+	gtk_widget_set_margin_end(drop_box->label, 2);
+	gtk_widget_set_margin_top(drop_box->label, 2);
+	gtk_widget_set_margin_bottom(drop_box->label, 2);
 
-	drop_box->buttons = gtk_hbutton_box_new();
+	drop_box->buttons = gtk_button_box_new(GTK_ORIENTATION_HORIZONTAL);
 	gtk_box_pack_start(GTK_BOX(vbox), drop_box->buttons, FALSE, TRUE, 0);
 
-	button = gtk_button_new_from_stock(GTK_STOCK_CLEAR);
+	button = button_new_mixed("edit-clear", _("_Clear"));
 	gtk_box_pack_start(GTK_BOX(drop_box->buttons), button, FALSE, TRUE, 0);
 	g_signal_connect(button, "clicked",
 			G_CALLBACK(clear_clicked), drop_box);
 
-	mp = type_to_icon(inode_directory);
-	pixmap_make_small(mp);
-	icon = gtk_image_new_from_pixbuf(mp->sm_pixbuf);
-	g_object_unref(mp);
-	button = button_new_image_text(icon, _("Show"));
+	button = button_new_mixed("folder-open", _("_Show"));
 	gtk_box_pack_start(GTK_BOX(drop_box->buttons), button, FALSE, TRUE, 0);
 	g_signal_connect(button, "clicked",
 			G_CALLBACK(open_dir_clicked), drop_box);
@@ -150,7 +152,7 @@ GType drop_box_get_type(void)
 	return type;
 }
 
-void drop_box_set_path(DropBox *drop_box, const guchar *path)
+void drop_box_set_path(DropBox *drop_box, const gchar *path)
 {
 	char *copy;
 
@@ -248,13 +250,13 @@ static void drop_box_drag_data_received(GtkWidget *drop_box,
 			      guint32           time)
 {
 	GList *uris = NULL;
-	guchar *path = NULL;
+	gchar *path = NULL;
 	gboolean success = FALSE;
 
-	if (!selection_data->data)
+	if (!gtk_selection_data_get_length(selection_data))
 		goto err; 		/* Timeout? */
 
-	uris = uri_list_to_glist(selection_data->data);
+	uris = uri_list_to_glist((const char *) gtk_selection_data_get_data(selection_data));
 
 	if (g_list_length(uris) != 1)
 	{
@@ -269,7 +271,7 @@ static void drop_box_drag_data_received(GtkWidget *drop_box,
 	{
 		delayed_error(
 			_("Sorry, I can't use '%s' because it's not a local "
-			  "file."), (guchar *) uris->data);
+			  "file."), (gchar *) uris->data);
 		goto err;
 	}
 

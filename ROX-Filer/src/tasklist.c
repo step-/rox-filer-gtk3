@@ -1,6 +1,7 @@
 /*
  * ROX-Filer, filer for the ROX desktop project
  * Copyright (C) 2006, Thomas Leonard and others (see changelog for details).
+ * Copyright (C) 2026, step <step.commons@gmail.com>.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the Free
@@ -32,6 +33,8 @@
 
 #include <X11/Xlib.h>
 #include <X11/Xatom.h>
+#include <cairo/cairo.h>
+#include <cairo/cairo-xlib.h>
 
 #include "global.h"
 
@@ -226,20 +229,21 @@ static GArray *get_window_list(Window xwindow, GdkAtom atom)
 	gulong nitems;
 	gulong bytes_after;
 	unsigned char *data;
+	GdkDisplay *display = gdk_display_get_default();
 	int err, result;
 	int i;
 
 	array = g_array_new(FALSE, FALSE, sizeof(Window));
 
-	gdk_error_trap_push();
+	gdk_x11_display_error_trap_push(display);
 	type = None;
-	result = XGetWindowProperty(gdk_display,
+	result = XGetWindowProperty(GDK_DISPLAY_XDISPLAY(display),
 			xwindow,
 			gdk_x11_atom_to_xatom(atom),
 			0, G_MAXLONG,
 			False, XA_WINDOW, &type, &format, &nitems,
 			&bytes_after, &data);
-	err = gdk_error_trap_pop();
+	err = gdk_x11_display_error_trap_pop(display);
 
 	if (err != Success || result != Success)
 		return array;
@@ -258,30 +262,32 @@ static GArray *get_window_list(Window xwindow, GdkAtom atom)
 	return array;
 }
 
-static guchar *get_str(IconWindow *win, GdkAtom atom)
+static gchar *get_str(IconWindow *win, GdkAtom atom)
 {
 	Atom rtype;
 	int format;
 	gulong nitems;
 	gulong bytes_after;
-	unsigned char *data, *str = NULL;
+	unsigned char *data;
+	gchar *str = NULL;
+	GdkDisplay *display = gdk_display_get_default();
 	int err, result;
 
-	gdk_error_trap_push();
+	gdk_x11_display_error_trap_push(display);
 
-	result = XGetWindowProperty(gdk_display, win->xwindow,
+	result = XGetWindowProperty(GDK_DISPLAY_XDISPLAY(display), win->xwindow,
 			gdk_x11_atom_to_xatom(atom),
 			0, G_MAXLONG, False,
 			AnyPropertyType,
 			&rtype, &format, &nitems,
 			&bytes_after, &data);
 
-	err = gdk_error_trap_pop();
+	err = gdk_x11_display_error_trap_pop(display);
 
 	if (err == Success && result == Success && data)
 	{
 		if (*data)
-			str = g_strdup(data);
+			str = g_strdup((const gchar *) data);
 		XFree(data);
 	}
 
@@ -329,11 +335,11 @@ static gboolean within_viewport(Window xwindow)
   Window root_window, child;
   GdkRectangle win_rect;
 
-  XGetGeometry (gdk_display,
+  XGetGeometry (GDK_DISPLAY_XDISPLAY(gdk_display_get_default()),
                 xwindow,
                 &root_window,
                 &x, &y, &width, &height, &bw, &depth);
-  XTranslateCoordinates (gdk_display,
+  XTranslateCoordinates (GDK_DISPLAY_XDISPLAY(gdk_display_get_default()),
                          xwindow,
 			 root_window,
                          0, 0,
@@ -358,9 +364,9 @@ static void window_check_status(IconWindow *win)
 	Window transient_for;
 	gboolean iconic = FALSE;
 
-	if (XGetTransientForHint(gdk_display, win->xwindow, &transient_for) && transient_for)
+	if (XGetTransientForHint(GDK_DISPLAY_XDISPLAY(gdk_display_get_default()), win->xwindow, &transient_for) && transient_for)
 		iconic = FALSE;
-	else if (wm_supports_hidden && XGetWindowProperty(gdk_display, win->xwindow,
+	else if (wm_supports_hidden && XGetWindowProperty(GDK_DISPLAY_XDISPLAY(gdk_display_get_default()), win->xwindow,
 			gdk_x11_atom_to_xatom(xa__NET_WM_STATE),
 			0, G_MAXLONG, False,
 			XA_ATOM,
@@ -381,7 +387,7 @@ static void window_check_status(IconWindow *win)
 		}
 		XFree(data);
 	}
-	else if (XGetWindowProperty(gdk_display, win->xwindow,
+	else if (XGetWindowProperty(GDK_DISPLAY_XDISPLAY(gdk_display_get_default()), win->xwindow,
 			gdk_x11_atom_to_xatom(xa_WM_STATE),
 			0, 1, False,
 			gdk_x11_atom_to_xatom(xa_WM_STATE),
@@ -396,7 +402,7 @@ static void window_check_status(IconWindow *win)
 
 	/* Iconified windows on another desktops are not shown */
 	if (o_pinboard_tasklist_per_workspace.int_value &&
-	    XGetWindowProperty(gdk_display, win->xwindow,
+	    XGetWindowProperty(GDK_DISPLAY_XDISPLAY(gdk_display_get_default()), win->xwindow,
 			gdk_x11_atom_to_xatom(xa__NET_WM_DESKTOP),
 			0, G_MAXLONG, False, XA_CARDINAL, &type, &format, &nitems,
 			&bytes_after, &data) == Success && data)
@@ -416,7 +422,7 @@ static void window_check_status(IconWindow *win)
 
 	state_changed(win);
 
-	gdk_flush();
+	gdk_display_flush(gdk_display_get_default());
 }
 
 static void update_current_desktop(void)
@@ -427,7 +433,7 @@ static void update_current_desktop(void)
 	gulong nitems;
 	gulong bytes_after;
 
-	if (XGetWindowProperty(gdk_display, gdk_x11_get_default_root_xwindow(),
+	if (XGetWindowProperty(GDK_DISPLAY_XDISPLAY(gdk_display_get_default()), gdk_x11_get_default_root_xwindow(),
 			gdk_x11_atom_to_xatom(xa__NET_CURRENT_DESKTOP),
 			0, G_MAXLONG, False, XA_CARDINAL, &type, &format, &nitems,
 			&bytes_after, (unsigned char **)(&data)) == Success && data) {
@@ -435,7 +441,7 @@ static void update_current_desktop(void)
 		XFree(data);
 	}
 
-	if (XGetWindowProperty(gdk_display, gdk_x11_get_default_root_xwindow(),
+	if (XGetWindowProperty(GDK_DISPLAY_XDISPLAY(gdk_display_get_default()), gdk_x11_get_default_root_xwindow(),
 			gdk_x11_atom_to_xatom(xa__NET_DESKTOP_VIEWPORT),
 			0, G_MAXLONG, False, XA_CARDINAL, &type, &format,
 			&nitems,
@@ -455,6 +461,7 @@ static GdkFilterReturn window_filter(GdkXEvent *xevent,
 				     gpointer data)
 {
 	XEvent *xev = (XEvent *) xevent;
+	GdkDisplay *display = gdk_display_get_default();
 	IconWindow *w;
 
 	if (xev->type == PropertyNotify)
@@ -468,9 +475,9 @@ static GdkFilterReturn window_filter(GdkXEvent *xevent,
 
 			if (w)
 			{
-				gdk_error_trap_push();
+				gdk_x11_display_error_trap_push(display);
 				window_check_status(w);
-				if (gdk_error_trap_pop() != Success)
+				if (gdk_x11_display_error_trap_pop(display) != Success)
 					g_hash_table_remove(known, &win);
 			}
 		}
@@ -506,6 +513,7 @@ static GdkFilterReturn window_filter(GdkXEvent *xevent,
 static void add_window(Window win)
 {
 	IconWindow *w;
+	GdkDisplay *display = gdk_display_get_default();
 
 	/* g_print("[ New window %ld ]\n", (long) win); */
 
@@ -515,20 +523,20 @@ static void add_window(Window win)
 	{
 		XWindowAttributes attr;
 
-		gdk_error_trap_push();
+		gdk_x11_display_error_trap_push(display);
 
-		XGetWindowAttributes(gdk_display, win, &attr);
+		XGetWindowAttributes(GDK_DISPLAY_XDISPLAY(display), win, &attr);
 
-		if (gdk_error_trap_pop() != Success)
+		if (gdk_x11_display_error_trap_pop(display) != Success)
 			return;
-		gdk_error_trap_push();
+		gdk_x11_display_error_trap_push(display);
 
-		XSelectInput(gdk_display, win, attr.your_event_mask |
+		XSelectInput(GDK_DISPLAY_XDISPLAY(display), win, attr.your_event_mask |
 			PropertyChangeMask);
 
-		gdk_flush();
+		gdk_display_flush(display);
 
-		if (gdk_error_trap_pop() != Success)
+		if (gdk_x11_display_error_trap_pop(display) != Success)
 			return;
 
 		w = g_new(IconWindow, 1);
@@ -542,7 +550,7 @@ static void add_window(Window win)
 		g_hash_table_insert(known, &w->xwindow, w);
 	}
 
-	gdk_error_trap_push();
+	gdk_x11_display_error_trap_push(display);
 
 	window_check_status(w);
 
@@ -550,7 +558,7 @@ static void add_window(Window win)
 	set_iconify_pos(w);
 #endif
 
-	if (gdk_error_trap_pop() != Success)
+	if (gdk_x11_display_error_trap_pop(display) != Success)
 		g_hash_table_remove(known, &win);
 }
 
@@ -638,9 +646,10 @@ static void tasklist_update(gboolean to_empty)
 static void uniconify(IconWindow *win, guint32 timestamp)
 {
 	XClientMessageEvent sev;
+	GdkDisplay *display = gdk_display_get_default();
 
 	sev.type = ClientMessage;
-	sev.display = gdk_display;
+	sev.display = GDK_DISPLAY_XDISPLAY(display);
 	sev.format = 32;
 	sev.window = win->xwindow;
 	sev.message_type = gdk_x11_atom_to_xatom(
@@ -649,14 +658,14 @@ static void uniconify(IconWindow *win, guint32 timestamp)
 	sev.data.l[1] = timestamp;
 	sev.data.l[2] = 0;
 
-	gdk_error_trap_push();
+	gdk_x11_display_error_trap_push(display);
 
-	XSendEvent(gdk_display, DefaultRootWindow(gdk_display), False,
+	XSendEvent(GDK_DISPLAY_XDISPLAY(display), DefaultRootWindow(GDK_DISPLAY_XDISPLAY(display)), False,
 			SubstructureNotifyMask | SubstructureRedirectMask,
 			(XEvent *) &sev);
-	XSync(gdk_display, False);
+	XSync(GDK_DISPLAY_XDISPLAY(display), False);
 
-	gdk_error_trap_pop();
+	gdk_x11_display_error_trap_pop_ignored(display);
 }
 
 static gint drag_start_x = -1;
@@ -696,7 +705,7 @@ static gboolean icon_motion_notify(GtkWidget *widget,
 			drag_started = TRUE;
 		}
 
-		fixed_move_fast(GTK_FIXED(win->widget->parent),
+		fixed_move_fast(GTK_FIXED(gtk_widget_get_parent(win->widget)),
 				win->widget,
 				event->x_root - drag_off_x,
 				event->y_root - drag_off_y);
@@ -716,71 +725,35 @@ static void button_released(GtkWidget *widget, GdkEventButton *event,
 		uniconify(win, event->time);
 }
 
-static GdkColormap* get_cmap(GdkPixmap *pixmap)
-{
-	GdkColormap *cmap;
-
-	cmap = gdk_drawable_get_colormap(pixmap);
-	if (cmap)
-		g_object_ref(G_OBJECT(cmap));
-
-	if (cmap == NULL)
-	{
-		if (gdk_drawable_get_depth(pixmap) == 1)
-		{
-			/* Masks don't need colourmaps */
-			cmap = NULL;
-		}
-		else
-		{
-			/* Try system cmap */
-			cmap = gdk_colormap_get_system();
-			g_object_ref(G_OBJECT(cmap));
-		}
-	}
-
-	/* Be sure we aren't going to blow up due to visual mismatch */
-	if (cmap && (gdk_colormap_get_visual(cmap)->depth !=
-			 gdk_drawable_get_depth(pixmap)))
-		cmap = NULL;
-
-	return cmap;
-}
-
 /* Copy a pixmap from the server to a client-side pixbuf */
 static GdkPixbuf* pixbuf_from_pixmap(Pixmap xpixmap)
 {
-	GdkDrawable *drawable;
-	GdkPixbuf *retval;
-	GdkColormap *cmap;
-	int width, height;
+	GdkPixbuf *retval = NULL;
+	cairo_surface_t *surface;
+	Display *xdisplay;
+	Window root;
+	int x, y;
+	unsigned int width, height, bw, depth;
 
-	retval = NULL;
+	xdisplay = GDK_DISPLAY_XDISPLAY(gdk_display_get_default());
 
-	drawable = gdk_xid_table_lookup(xpixmap);
+	if (!XGetGeometry(xdisplay, xpixmap, &root, &x, &y,
+				&width, &height, &bw, &depth) || width == 0 || height == 0)
+		return NULL;
 
-	if (GDK_IS_DRAWABLE(drawable))
-		g_object_ref(G_OBJECT(drawable));
+	if (depth == 1)
+		surface = cairo_xlib_surface_create_for_bitmap(xdisplay,
+				xpixmap,
+				DefaultScreenOfDisplay(xdisplay),
+				width, height);
 	else
-	{
-		drawable = gdk_pixmap_foreign_new(xpixmap);
-		if (!GDK_IS_DRAWABLE(drawable))
-			return retval;
-	}
+		surface = cairo_xlib_surface_create(xdisplay,
+				xpixmap,
+				DefaultVisual(xdisplay, DefaultScreen(xdisplay)),
+				width, height);
 
-	cmap = get_cmap(drawable);
-
-	/* GDK is supposed to do this but doesn't in GTK 2.0.2,
-	 * fixed in 2.0.3
-	 */
-	gdk_drawable_get_size(drawable, &width, &height);
-
-	retval = gdk_pixbuf_get_from_drawable(NULL, drawable, cmap,
-						0, 0, 0, 0, width, height);
-
-	if (cmap)
-		g_object_unref(G_OBJECT(cmap));
-	g_object_unref(G_OBJECT(drawable));
+	retval = gdk_pixbuf_get_from_surface(surface, 0, 0, width, height);
+	cairo_surface_destroy(surface);
 
 	return retval;
 }
@@ -867,11 +840,12 @@ static GdkPixbuf *get_image_for(IconWindow *win)
 	Pixmap pixmap = None;
 	Pixmap mask = None;
 	XWMHints *hints;
+	GdkDisplay *display = gdk_display_get_default();
 	GdkPixbuf *retval = NULL;
 
 	/* Try the pixmap and mask in the old WMHints... */
-	gdk_error_trap_push();
-	hints = XGetWMHints(gdk_display, win->xwindow);
+	gdk_x11_display_error_trap_push(display);
+	hints = XGetWMHints(GDK_DISPLAY_XDISPLAY(display), win->xwindow);
 
 	if (hints)
 	{
@@ -908,9 +882,9 @@ static GdkPixbuf *get_image_for(IconWindow *win)
 		}
 	}
 
-	gdk_flush();
+	gdk_display_flush(display);
 
-	gdk_error_trap_pop();
+	gdk_x11_display_error_trap_pop_ignored(display);
 
 	if (!retval)
 	{
@@ -937,10 +911,11 @@ static GdkPixbuf *get_image_for(IconWindow *win)
 }
 
 /* Stop the button from highlighting */
-static gint icon_expose(GtkWidget *widget, GdkEventExpose *event,
+static gboolean icon_expose(GtkWidget *widget, cairo_t *cr,
 			IconWindow *win)
 {
 	static GtkWidgetClass *parent_class = NULL;
+	cairo_rectangle_int_t clip_rect;
 
 	g_return_val_if_fail(win != NULL, TRUE);
 	g_return_val_if_fail(win->label != NULL, TRUE);
@@ -951,13 +926,14 @@ static gint icon_expose(GtkWidget *widget, GdkEventExpose *event,
 		parent_class = (GtkWidgetClass *) g_type_class_peek_parent(c);
 	}
 
-	draw_label_shadow((WrappedLabel *) win->label, event->region);
+	if (gdk_cairo_get_clip_rectangle(cr, &clip_rect))
+	{
+		cairo_region_t *region = cairo_region_create_rectangle(&clip_rect);
+		draw_label_shadow((WrappedLabel *) win->label, region);
+		cairo_region_destroy(region);
+	}
 
-	gdk_gc_set_clip_region(win->label->style->fg_gc[win->label->state],
-				event->region);
-	(parent_class->expose_event)(widget, event);
-	gdk_gc_set_clip_region(win->label->style->fg_gc[win->label->state],
-				NULL);
+	(parent_class->draw)(widget, cr);
 
 	/* Stop the button effect */
 	return TRUE;
@@ -974,9 +950,9 @@ static void show_icon(IconWindow *win)
 
 	win->widget = gtk_button_new();
 	gtk_button_set_relief(GTK_BUTTON(win->widget), GTK_RELIEF_NONE);
-	g_signal_connect(win->widget, "expose-event",
+	g_signal_connect(win->widget, "draw",
 			G_CALLBACK(icon_expose), win);
-	vbox = gtk_vbox_new(FALSE, 0);
+	vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
 	gtk_container_add(GTK_CONTAINER(win->widget), vbox);
 
 	pixbuf = get_image_for(win);
@@ -1040,7 +1016,7 @@ static void set_iconify_pos(IconWindow *win)
 	data[2] = 100;
 	data[3] = 32;
 
-	XChangeProperty(gdk_display, win->xwindow,
+	XChangeProperty(GDK_DISPLAY_XDISPLAY(gdk_display_get_default()), win->xwindow,
 			gdk_x11_atom_to_xatom(xa__NET_WM_ICON_GEOMETRY),
 			XA_CARDINAL, 32, PropModeReplace, (guchar *) data, 4);
 }
@@ -1054,10 +1030,10 @@ static void update_style(gpointer key, gpointer data, gpointer user_data)
 		return;
 
 	widget_modify_font(win->label, pinboard_font);
-	gtk_widget_modify_fg(win->label, GTK_STATE_NORMAL, &pin_text_fg_col);
-	gtk_widget_modify_bg(win->label, GTK_STATE_NORMAL, &pin_text_bg_col);
-	gtk_widget_modify_fg(win->label, GTK_STATE_PRELIGHT, &pin_text_fg_col);
-	gtk_widget_modify_bg(win->label, GTK_STATE_PRELIGHT, &pin_text_bg_col);
+	{
+		widget_set_fg_color(win->label, &pin_text_fg_col);
+		widget_set_bg_color(win->label, &pin_text_bg_col);
+	}
 }
 
 /* Find out what the new window manager can do... */
@@ -1068,21 +1044,22 @@ static void update_supported(void)
 	gulong nitems;
 	gulong bytes_after;
 	unsigned char *data;
+	GdkDisplay *display = gdk_display_get_default();
 	int err, result;
 	int i;
 	gboolean old_supports_hidden = wm_supports_hidden;
 
 	wm_supports_hidden = FALSE;
 
-	gdk_error_trap_push();
+	gdk_x11_display_error_trap_push(display);
 	type = None;
-	result = XGetWindowProperty(gdk_display,
+	result = XGetWindowProperty(GDK_DISPLAY_XDISPLAY(display),
 			gdk_x11_get_default_root_xwindow(),
 			gdk_x11_atom_to_xatom(xa__NET_SUPPORTED),
 			0, G_MAXLONG,
 			False, XA_ATOM, &type, &format, &nitems,
 			&bytes_after, &data);
-	err = gdk_error_trap_pop();
+	err = gdk_x11_display_error_trap_pop(display);
 
 	if (err != Success || result != Success)
 		goto out;

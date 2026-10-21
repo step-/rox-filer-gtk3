@@ -1,6 +1,7 @@
 /*
  * ROX-Filer, filer for the ROX desktop project
  * Copyright (C) 2006, Thomas Leonard and others (see changelog for details).
+ * Copyright (C) 2026, step <step.commons@gmail.com>.
  *
  * A cache object holds stat details about files in a hash table, along
  * with user-specified data. When you want to read in a file try to
@@ -401,7 +402,7 @@ static GFSCacheData *lookup_internal(GFSCache *cache, const char *pathname,
 		    lookup_type != FSCACHE_LOOKUP_INIT)
 			return NULL;
 
-		new_key = g_memdup(&key, sizeof(key));
+		new_key = g_memdup2(&key, sizeof(key));
 
 		data = g_new(GFSCacheData, 1);
 		data->data = NULL;

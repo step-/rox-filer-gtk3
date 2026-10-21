@@ -9,11 +9,23 @@
   <title>
    ROX-Filer User Manual
    <ulink url="http://rox.sourceforge.net"/>
+   <ulink url="https://github.com/step-/rox-filer-gtk3"/>
   </title>
-  <author>
-   <firstname>Thomas</firstname><surname>Leonard</surname>
-  </author>
-  <copyright><year>2005</year><holder>Thomas Leonard</holder></copyright>
+  <authorgroup>
+   <author>
+    <firstname>Thomas</firstname><surname>Leonard</surname>
+   </author>
+   <author>
+    <firstname>step</firstname>
+    <surname>(rox-filer-gtk3 project author)</surname>
+   </author>
+  </authorgroup>
+  <copyright>
+   <year>2005</year><holder>Thomas Leonard</holder>
+  </copyright>
+  <copyright>
+   <year>2026</year><holder>step</holder>
+  </copyright>
   <legalnotice>
    <title>Conditions</title>
    <para>
@@ -491,15 +503,29 @@
        if it's too long to show in the main window.
      </entry></row>
 
+     <row><entry><keycap>Shift</keycap>+<keycap>Menu</keycap></entry><entry>
+      Opens the <guimenu>Send To...</guimenu> menu of the selected
+      item (see the <xref linkend="SendTo"/> section).
+     </entry></row>
+
+     <row><entry><keycap>Shift</keycap>+<keycap>F10</keycap></entry><entry>
+      Opens the <guimenu>Send To...</guimenu> menu of the selected
+      item (see the <xref linkend="SendTo"/> section).
+     </entry></row>
+
+     <row><entry><keycap>Shift</keycap>+<keycap>|</keycap></entry><entry>
+      Opens the <guimenu>Send To...</guimenu> menu of the selected
+      item (see the <xref linkend="SendTo"/> section).
+     </entry></row>
+
   </tbody></tgroup></informaltable>
 
   <para>
-   If you have user-defineable key-bindings enabled, then other keys can easily
-   be set by opening the menu, moving the pointer over the item you want to use
-   and pressing a key. The key will appear in the menu and can be used from
-   then on. Key bindings are automatically saved when the filer quits.
-   You can use an XSettings manager, such as ROX-Session, to turn this feature
-   on for all Gtk+-2.0 applications.
+   To set a custom key-binding for a menu entry, open the Keyboard Shortcuts
+   dialog from the Menus section of the Options window. Navigate the menu structure
+   to the item you want to use, double-click the Shortcut cell and press the key
+   combination. To unset a key-binding double-click the cell and press
+   <keycap>Backspace</keycap>.
   </para>
  </chapter>
 
@@ -537,13 +563,28 @@
    filer to regain the primary selection.
   </para>
 
-  <sect1><title>Saving and restoring the selection</title>
+  <sect1><title><anchor id="save-selection" xreflabel="Save Selection"/>Saving and restoring the selection</title>
    <para>
     It is sometimes useful to save the current selection for later. You can
-    save the current selection to one of ten numbered groups by pressing
-    <keycap>Control</keycap>+<keycap>&lt;number&gt;</keycap>.
-    You can restore a saved group by pressing the group number on its own. You
-    can do this from a different directory, or even a different filer window.
+     save the current selection to one of ten numbered groups by pressing
+     <keycap>Control</keycap>+<keycap>&lt;number&gt;</keycap>.
+     A numbered group saves the current directory plus the current file
+     selection, if any.
+     You can jump to a saved group by pressing the group number on its own,
+     which returns to the saved directory and reselects the saved files. You
+     can do this from a different directory, or even a different filer window.
+    </para><para>
+     Typing a digit normally jumps to a group, which clashes with selecting
+     file names that start with a number. The
+     <guilabel>Digits select, Alt+digit jumps to groups</guilabel> option
+     (Filer windows in the Options window) swaps the bindings: a digit on
+     its own starts a progressive Reg Select for that digit, and a saved
+     group is jumped to with <keycap>Alt</keycap>+<keycap>&lt;number&gt;</keycap>
+     instead. Saving with
+     <keycap>Control</keycap>+<keycap>&lt;number&gt;</keycap> is unchanged,
+     and turning the option off restores the classic bindings. Note that
+     some window managers swallow Alt+number for workspace switching; if
+     Alt+digit does nothing, check the window manager bindings first.
     </para><para>
     Saving is also useful even if there is no selection, since it still saves
     the current directory.
@@ -1022,8 +1063,28 @@
 	 isn't as flexible as <guimenuitem>Select If...</guimenuitem> (see
 	 below), but it is quicker to use. Files also highlight as you type
 	 with this option. The default key binding is <keycap>.</keycap>,
-	 so you can type <userinput>.png</userinput> to select all
-	 <filename>.png</filename> files, for example.
+         so you can type <userinput>.png</userinput> to select all
+         <filename>.png</filename> files, for example. Typing a letter in
+         a filer window opens <guimenuitem>Reg Select...</guimenuitem>
+         (below) instead; <keycap>.</keycap> always opens this dialog.
+        </entry></row>
+
+       <row><entry>
+         <guimenuitem>Reg Select...</guimenuitem></entry><entry>
+         Select files whose names match a regular expression
+         (case-insensitive), updating the selection with every keystroke.
+         The default key binding is <keycap>^</keycap>. Typing a letter
+         in a filer window opens this directly; typing a digit does too
+         when the <guilabel>Digits select</guilabel> option is on (see
+         the <xref linkend="save-selection"/> section).
+       </entry></row>
+
+       <row><entry>
+         <guimenuitem>Temp Filter...</guimenuitem></entry><entry>
+         Hide every file whose name does not match a regular expression,
+         until the minibuffer is closed. Typing a capital letter
+         (Shift+letter) in a filer window opens this directly;
+         Shift+Enter switches between Reg Select and Temp Filter.
        </entry></row>
 
        <row><entry>
@@ -1258,6 +1319,19 @@
     The <guimenuitem>Recently Visited</guimenuitem> submenu shows the last few directories
     viewed. Choosing one will switch to that directory. The current directory is shown
     shaded, since you are already there.
+   </para>
+   <para>
+    The <guimenuitem>Numbered Groups</guimenuitem> submenu lists the ten
+    numbered group slots (see <xref linkend="save-selection"/>). Each
+    active slot shows its saved directory and, in brackets, how many files
+    were saved with it; choosing one jumps to the saved directory and
+    reselects the saved files. Inactive slots are shown greyed out. The
+    key binding shown beside each slot tracks the
+    <guilabel>Digits select</guilabel> option (a bare digit, or Alt+digit
+    when selecting with digits is on). To reset a slot, choose
+    <guimenuitem>Edit Groups.xml</guimenuitem> at the bottom of the submenu,
+    make a backup copy in the new filer window, edit the file and
+    carefully delete that slot's entry from the file.
    </para>
   </sect1>
 
@@ -2673,15 +2747,20 @@ generated.
    </title>
    <para>
 
-    <application>ROX-Filer</application> is able to translate many of its messages,
-    provided suitable translation files are provided:
+    <application>ROX-Filer</application> is able to display translated messages,
+    provided suitable translation catalogs are installed, and the
+    <envar>LANG</envar> environment variable is set correctly. For example:
 
-    <orderedlist>
-     <listitem><para>Open the Options box from the menu,</para></listitem>
-     <listitem><para>Select a language from the list,</para></listitem>
-     <listitem><para>Click on <guibutton>OK</guibutton> and restart the filer
-       for the new setting to take full effect.</para></listitem>
-    </orderedlist>
+    <screen>
+     $ LANG=fr_FR.UTF-8; export LANG
+     $ ROX-Filer/AppRun
+    </screen>
+
+    will cause the filer to display all messages in French.
+
+    <envar>LANG</envar>
+     values are standard POSIX locale strings (Language_Territory.Encoding).
+     and UTF-8 is the intended encoding for all locales.
 
    </para>
   </sect1>
@@ -2702,9 +2781,9 @@ generated.
 
      <listitem><para>Copy the file into the <filename>src/po</filename>
        directory as <filename>&lt;name&gt;.po</filename>. Eg, if your
-       language is referred to as `ml' (`my language'):
+       language is Esperanto, its ISO 639 standard language code is `eo':
 
-       <screen>$ cp ../messages.pot ml.po</screen>
+       <screen>$ cp ../messages.pot eo.po</screen>
      </para></listitem>
 
      <listitem><para>Load the copy into a text editor.</para></listitem>
@@ -2718,17 +2797,12 @@ generated.
 
        <screen>
         $ cd ROX-Filer/src/po
-        $ ./make-mo ml
-        Created file ../../Messages/ml.gmo OK</screen>
+        $ ./make-mo eo
+        Created file ../../Messages/eo.mo OK</screen>
      </para></listitem>
 
-     <listitem><para>Edit <filename>ROX-Filer/Options.xml</filename> so that
-       your language is listed, restart the filer and select it from the Options box
-       (see the <xref linkend="LANG"/> section).
-     </para></listitem>
-
-     <listitem><para>Submit the <filename>.po</filename> file to the ROX
-     patch tracker so that we can include it in future releases of the filer.
+     <listitem><para>Submit the <filename>.po</filename> file to the <application>rox-filer-gtk3</application>
+      project so that we can include it in future releases of the filer.
      </para></listitem>
 
     </orderedlist>
@@ -2759,7 +2833,9 @@ generated.
 
      <listitem><para>Run <command>make-mo</command> as before.</para></listitem>
 
-     <listitem><para>Submit the updated file to us.</para></listitem>
+     <listitem><para>Submit the updated <filename>.po</filename> file to the <application>rox-filer-gtk3</application>
+      project so that we can include it in future releases of the filer.
+     </para></listitem>
 
     </orderedlist>
 
@@ -2896,7 +2972,12 @@ generated.
     </para></listitem>
 
     <listitem><para>
-      GTK+ 2.4.0 or later (libraries and headers) &mdash; get the latest version
+      GTK+ 3.22.0 or later (libraries and headers) &mdash; get the latest version
+      from <citation>GTK+</citation>,
+    </para></listitem>
+
+    <listitem><para>
+      Glib 2.68.0 or later (libraries and headers) &mdash; get the latest version
       from <citation>GTK+</citation>,
     </para></listitem>
 
@@ -2911,6 +2992,11 @@ generated.
     </para></listitem>
 
     <listitem><para>
+      shared-mime-info 0.14 or later (libraries and headers) &mdash; get the latest
+      version from <citation>freedesktop.org</citation>,
+    </para></listitem>
+
+    <listitem><para>
       A C compiler, such as `gcc' (standard on most systems).
     </para></listitem>
 
@@ -2921,8 +3007,8 @@ generated.
    <command>pkg-config</command> command, like this
    (<prompt>$</prompt> is the shell prompt):
 
-   <screen>$ pkg-config --modversion gtk+-2.0
-2.6.8</screen>
+   <screen>$ pkg-config --modversion gtk+-3.0
+3.24.49</screen>
   </para>
 
   <procedure><title>To compile (using Zero Install):</title>
@@ -2958,9 +3044,9 @@ generated.
   <procedure><title>To compile (manually):</title>
 
    <step><para>
-     The filer now uses the Shared MIME Database<citation>SharedMIME</citation>
+     The filer uses the Shared MIME Database<citation>SharedMIME</citation>
      to work out the types of files. You need to install this before the
-     filer will work properly (ROX-Filer will warn you if it's not installed
+     filer will work properly (ROX-Filer will warn you if it is not installed
      when you run it).
    </para></step>
 
@@ -2986,6 +3072,14 @@ generated.
    <step><para>
      Once the filer has compiled it will run automatically. You can run it
      again later by running the AppRun script with no arguments.
+   </para></step>
+
+   <step><para>
+     For developers, after the first clean compilation using AppRun, make
+     can be invoked directly like this:
+
+     <screen>$ make -C ./ROX-Filer/src</screen>
+
    </para></step>
   </procedure>
 

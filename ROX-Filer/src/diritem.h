@@ -47,17 +47,17 @@ struct _DirItem
 	time_t		atime, ctime, mtime;
 	MaskedPixmap	*_image;	/* NULL => leafname only so far */
 	MIME_type	*mime_type;
-	GdkColor	*label;
+	GdkRGBA		*label;
 	uid_t		uid;
 	gid_t		gid;
 };
 
 void diritem_init(void);
-DirItem *diritem_new(const guchar *leafname);
-void diritem_restat(const guchar *path, DirItem *item, struct stat *parent, gboolean examine_now);
+DirItem *diritem_new(const gchar *leafname);
+void diritem_restat(const gchar *path, DirItem *item, struct stat *parent, gboolean examine_now);
 MaskedPixmap *_diritem_get_image(DirItem *item, gboolean mainthread);
 void diritem_free(DirItem *item);
-gboolean diritem_examine_dir(const guchar *path, DirItem *item);
+gboolean diritem_examine_dir(const gchar *path, DirItem *item);
 
 static inline MaskedPixmap *di_image(DirItem *item)
 {

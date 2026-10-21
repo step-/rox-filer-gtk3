@@ -21,7 +21,7 @@ void action_link(GList *paths, const char *dest, const char *leaf,
 		 gboolean relative);
 void action_eject(GList *paths);
 void show_condition_help(gpointer data);
-void set_find_string_colour(GtkWidget *widget, const guchar *string);
+void set_find_string_colour(GtkWidget *widget, const gchar *string);
 void action_settype(GList *paths, gboolean force_recurse, const char *oldtype);
 
 #endif /* _ACTION_H */

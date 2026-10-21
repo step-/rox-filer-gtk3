@@ -1,6 +1,7 @@
 /*
  * ROX-Filer, filer for the ROX desktop project
  * Copyright (C) 2006, Thomas Leonard and others (see changelog for details).
+ * Copyright (C) 2026, step <step.commons@gmail.com>.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the Free
@@ -48,6 +49,7 @@
 #include "pixmaps.h"
 #include "main.h"
 #include "filer.h"
+#include "display.h"
 #include "dir.h"
 #include "diritem.h"
 #include "choices.h"
@@ -57,6 +59,13 @@
 
 GFSCache *pixmap_cache = NULL;
 GFSCache *thumb_cache = NULL;
+
+/* Background colour to blend alpha-channel thumbnails onto before
+ * saving as JPEG (JPEG has no alpha channel). Resolved in the parent
+ * process before fork(); the child must not call GTK+ after fork().
+ */
+static GdkRGBA thumb_bg;
+static gboolean thumb_bg_valid = FALSE;
 
 static const char * bad_xpm[] = {
 "12 12 3 1",
@@ -79,14 +88,21 @@ static const char * bad_xpm[] = {
 MaskedPixmap *im_error;
 MaskedPixmap *im_unknown;
 
+static GdkPixbuf *emblem_mount = NULL;
+static GdkPixbuf *emblem_mounted = NULL;
+static GdkPixbuf *emblem_symlink = NULL;
+static GdkPixbuf *emblem_xattr = NULL;
+static GdkPixbuf *emblem_unknown = NULL;
+
 MaskedPixmap *im_appdir;
 
 MaskedPixmap *im_dirs;
 
-GtkIconSize mount_icon_size = -1;
-
-int small_height = 0;
-int small_width = 0;
+/* pixmap_make_small() scales by these. The menu icon sizes (16, 24, 32) do
+ * not match this tier and are scaled from the full-size image instead; this
+ * tier is for the small icon view, and the bookmarks list. */
+int small_height = SMALL_HEIGHT;
+int small_width = SMALL_WIDTH;
 int thumb_size = PIXMAP_THUMB_SIZE;
 
 gchar *thumb_dir = "normal";
@@ -111,15 +127,6 @@ struct _ChildThumbnail {
 static guint ordered_num = 0;
 static guint next_order = 0;
 
-static const char *stocks[] = {
-	ROX_STOCK_SHOW_DETAILS,
-	ROX_STOCK_SHOW_HIDDEN,
-	ROX_STOCK_MOUNT,
-	ROX_STOCK_MOUNTED,
-	ROX_STOCK_SYMLINK,
-	ROX_STOCK_XATTR,
-};
-
 /* Static prototypes */
 
 static void load_default_pixmaps(void);
@@ -131,7 +138,7 @@ static GdkPixbuf *get_thumbnail_for(const char *path, gboolean forcheck);
 static void ordered_update(ChildThumbnail *info);
 static void thumbnail_done(ChildThumbnail *info);
 static void create_thumbnail(const gchar *path, MIME_type *type);
-static GList *thumbs_purge_cache(Option *option, xmlNode *node, guchar *label);
+static GList *thumbs_purge_cache(Option *option, xmlNode *node, gchar *label);
 static gchar *thumbnail_path(const gchar *path);
 static gchar *thumbnail_program(MIME_type *type);
 static GdkPixbuf *extract_tiff_thumbnail(const gchar *path);
@@ -176,9 +183,6 @@ static void options_changed()
 
 void pixmaps_init(void)
 {
-	GtkIconFactory *factory;
-	int i;
-
 	option_add_int(&o_pixmap_thumb_file_size, "thumb_file_size", PIXMAP_THUMB_SIZE);
 //	option_add_int(&o_purge_time, "purge_time", PIXMAP_PURGE_TIME);
 	option_add_int(&o_purge_time, "purge_time", 0);
@@ -186,45 +190,163 @@ void pixmaps_init(void)
 	option_add_int(&o_purge_days, "purge_days", 90);
 	option_add_notify(options_changed);
 
-	gtk_widget_push_colormap(gdk_rgb_get_colormap());
-
 	pixmap_cache = g_fscache_new((GFSLoadFunc) image_from_file, NULL, NULL);
 	thumb_cache = g_fscache_new((GFSLoadFunc) image_from_file, NULL, NULL);
 
 	g_timeout_add(6000, purge_thumbs, NULL);
 	g_timeout_add(PIXMAP_PURGE_TIME / 2 * 1000, purge_pixmaps, NULL);
 
-	factory = gtk_icon_factory_new();
-	for (i = 0; i < G_N_ELEMENTS(stocks); i++)
+	/* Register icon theme search paths for rox-* icons */
 	{
-		GdkPixbuf *pixbuf;
-		GError *error = NULL;
+		GtkIconTheme *theme = gtk_icon_theme_get_default();
 		gchar *path;
-		GtkIconSet *iset;
-		const gchar *name = stocks[i];
 
-		path = g_strconcat(app_dir, "/images/", name, ".png", NULL);
-		pixbuf = gdk_pixbuf_new_from_file(path, &error);
-		if (!pixbuf)
-		{
-			g_warning("%s", error->message);
-			g_error_free(error);
-			pixbuf = gdk_pixbuf_new_from_xpm_data(bad_xpm);
-		}
+		if (!theme)
+			g_warning("pixmaps_init: gtk_icon_theme_get_default() returned NULL");
+
+		gtk_icon_theme_append_search_path(theme, app_dir);
+
+		path = g_build_filename(g_get_user_data_dir(), "icons", NULL);
+		gtk_icon_theme_append_search_path(theme, path);
 		g_free(path);
-
-		iset = gtk_icon_set_new_from_pixbuf(pixbuf);
-		g_object_unref(G_OBJECT(pixbuf));
-		gtk_icon_factory_add(factory, name, iset);
-		gtk_icon_set_unref(iset);
 	}
-	gtk_icon_factory_add_default(factory);
 
-	mount_icon_size = gtk_icon_size_register("rox-mount-size", 14, 14);
+	/* Load emblem pixbufs at native resolution from the icon theme */
+	{
+		const char *emblems[] = {
+			ROX_STOCK_MOUNT,
+			ROX_STOCK_MOUNTED,
+			ROX_STOCK_SYMLINK,
+			ROX_STOCK_XATTR,
+			ROX_STOCK_UNKNOWN,
+		};
+		GdkPixbuf **emblem_ptrs[] = {
+			&emblem_mount,
+			&emblem_mounted,
+			&emblem_symlink,
+			&emblem_xattr,
+			&emblem_unknown,
+		};
+		GtkIconTheme *theme = gtk_icon_theme_get_default();
+		gchar *path;
+		gchar *name;
+		gint i;
+
+		for (i = 0; i < (gint)(sizeof(emblems) / sizeof(emblems[0])); i++)
+		{
+			GtkIconInfo *info;
+			GError *error = NULL;
+
+			/* Try the icon theme first (search path includes app_dir) */
+			info = theme ? gtk_icon_theme_lookup_icon(theme,
+						emblems[i], 48, 0) : NULL;
+			if (info)
+			{
+				*emblem_ptrs[i] = gtk_icon_info_load_icon(
+							info, &error);
+				g_object_unref(info);
+			}
+			if (error)
+			{
+				g_warning("Failed to load emblem %s: %s",
+						emblems[i], error->message);
+				g_error_free(error);
+				error = NULL;
+			}
+
+			/* Fall back to the direct file path at native size */
+			if (!*emblem_ptrs[i])
+			{
+				name = g_strconcat(emblems[i], ".png", NULL);
+				path = g_build_filename(app_dir, "hicolor",
+						"48x48", "emblems", name, NULL);
+				g_free(name);
+				*emblem_ptrs[i] = gdk_pixbuf_new_from_file(
+						path, NULL);
+				if (!*emblem_ptrs[i])
+					g_warning("Failed to load emblem: %s",
+							path);
+				g_free(path);
+			}
+		}
+	}
 
 	load_default_pixmaps();
 	set_thumb_size();
 	option_register_widget("thumbs-purge-cache", thumbs_purge_cache);
+}
+
+GdkPixbuf *pixmaps_get_emblem(const char *stock_id)
+{
+	if (strcmp(stock_id, ROX_STOCK_MOUNT) == 0 && emblem_mount)
+		return g_object_ref(emblem_mount);
+	if (strcmp(stock_id, ROX_STOCK_MOUNTED) == 0 && emblem_mounted)
+		return g_object_ref(emblem_mounted);
+	if (strcmp(stock_id, ROX_STOCK_SYMLINK) == 0 && emblem_symlink)
+		return g_object_ref(emblem_symlink);
+	if (strcmp(stock_id, ROX_STOCK_XATTR) == 0 && emblem_xattr)
+		return g_object_ref(emblem_xattr);
+
+	/* Unknown emblem: fall back to images/rox-unknown.png */
+	if (emblem_unknown)
+		return g_object_ref(emblem_unknown);
+
+	g_return_val_if_reached(NULL);
+	return NULL;
+}
+
+static GHashTable *emblem_scaled_cache = NULL;
+
+/* Return the emblem scaled to size*scale physical pixels, so the caller
+ * can paint it at `size` logical pixels on a display with the given
+ * scale factor. The result is cached and must be unref'd by the caller.
+ */
+GdkPixbuf *pixmaps_get_emblem_scaled(const char *stock_id, int size, int scale)
+{
+	GdkPixbuf *src, *result;
+	gchar *key;
+	int phys;
+
+	if (size < 1)
+		size = 1;
+	if (scale < 1)
+		scale = 1;
+
+	phys = size * scale;
+
+	if (!emblem_scaled_cache)
+		emblem_scaled_cache = g_hash_table_new_full(g_str_hash,
+				g_str_equal, g_free,
+				(GDestroyNotify) g_object_unref);
+
+	key = g_strdup_printf("%s:%d:%d", stock_id, size, scale);
+	result = g_hash_table_lookup(emblem_scaled_cache, key);
+	if (result)
+	{
+		g_free(key);
+		return g_object_ref(result);
+	}
+
+	src = pixmaps_get_emblem(stock_id);
+	if (!src)
+	{
+		g_free(key);
+		return NULL;
+	}
+
+	if (gdk_pixbuf_get_width(src) == phys &&
+	    gdk_pixbuf_get_height(src) == phys)
+		result = src;
+	else
+	{
+		result = gdk_pixbuf_scale_simple(src, phys, phys,
+						GDK_INTERP_BILINEAR);
+		g_object_unref(src);
+	}
+
+	g_hash_table_insert(emblem_scaled_cache, key, result);
+
+	return g_object_ref(result);
 }
 
 /* Load image <appdir>/images/name.png.
@@ -232,7 +354,7 @@ void pixmaps_init(void)
  */
 MaskedPixmap *load_pixmap(const char *name)
 {
-	guchar *path;
+	gchar *path;
 	MaskedPixmap *retval;
 
 	path = g_strconcat(app_dir, "/images/", name, ".png", NULL);
@@ -245,28 +367,22 @@ MaskedPixmap *load_pixmap(const char *name)
 	return retval;
 }
 
-/* Create a MaskedPixmap from a GTK stock ID. Always returns
+/* Create a MaskedPixmap from a freedesktop icon name. Always returns
  * a valid image.
  */
-static MaskedPixmap *mp_from_stock(const char *stock_id, int size)
+static MaskedPixmap *mp_from_stock(const char *icon_name, GtkIconSize size)
 {
-	GtkIconSet *icon_set;
 	GdkPixbuf  *pixbuf;
 	MaskedPixmap *retval;
+	gint pixel_size;
 
-	/*icon_set = gtk_icon_factory_lookup_default(stock_id);*/
-	icon_set = gtk_style_lookup_icon_set(gtk_widget_get_default_style(),
-					     stock_id);
-	if (!icon_set)
+	gtk_icon_size_lookup(size, &pixel_size, NULL);
+
+	pixbuf = gtk_icon_theme_load_icon(gtk_icon_theme_get_default(),
+					 icon_name, pixel_size, 0, NULL);
+	if (!pixbuf)
 		return get_bad_image();
 
-	pixbuf = gtk_icon_set_render_icon(icon_set,
-                                     gtk_widget_get_default_style(), /* Gtk bug */
-                                     GTK_TEXT_DIR_LTR,
-                                     GTK_STATE_NORMAL,
-                                     size,
-                                     NULL,
-                                     NULL);
 	retval = masked_pixmap_new(pixbuf);
 	g_object_unref(pixbuf);
 
@@ -368,6 +484,40 @@ static int thumb_prog_timeout(ChildThumbnail *info)
 	return FALSE;
 }
 
+/* Resolve the background colour to blend alpha-channel thumbnails
+ * onto. The filer window shows an opaque background here, but the
+ * saved JPEG would record the transparency as black, so composite
+ * the thumbnail over the same colour first. Runs in the parent
+ * process only; the forked child inherits the result.
+ */
+static void resolve_thumb_bg(void)
+{
+	thumb_bg_valid = FALSE;
+
+	if (o_use_background_colour.int_value)
+	{
+		thumb_bg_valid = gdk_rgba_parse(&thumb_bg,
+				o_background_colour.value);
+	}
+	else
+	{
+		FilerWindow *fw = all_filer_windows ?
+			(FilerWindow *) all_filer_windows->data : NULL;
+
+		if (fw)
+			thumb_bg_valid = gtk_style_context_lookup_color(
+					gtk_widget_get_style_context(fw->window),
+					"theme_bg_color", &thumb_bg);
+	}
+
+	if (!thumb_bg_valid)
+	{
+		thumb_bg.red = thumb_bg.green =
+			thumb_bg.blue = thumb_bg.alpha = 1.0;
+		thumb_bg_valid = TRUE;
+	}
+}
+
 /* Load image 'path' in the background and insert into pixmap_cache.
  * Call callback(data, path) when done (path is NULL => error).
  * If the image is already uptodate, or being created already, calls the
@@ -446,6 +596,8 @@ void pixmap_background_thumb(const gchar *path, gboolean noorder,
 	info->timeout = 0;
 	info->order = ordered_num++;
 	if (noorder) info->order = 0;
+
+	resolve_thumb_bg();
 
 	child = fork();
 	if (child == -1)
@@ -620,10 +772,38 @@ static void save_thumbnail(const char *pathname, GdkPixbuf *full)
 	old_mask = umask(0077);
 	if (o_jpeg_thumbs.int_value == 1)
 	{
+		GdkPixbuf *to_save = thumb;
+
+		/* JPEG cannot store alpha; transparent thumbnails (SVG,
+		 * alpha PNG) would come out black. Blend them over the
+		 * same background colour the filer window uses. The
+		 * colour was resolved in the parent before fork().
+		 */
+		if (thumb_bg_valid && gdk_pixbuf_get_has_alpha(thumb))
+		{
+			int width = gdk_pixbuf_get_width(thumb);
+			int height = gdk_pixbuf_get_height(thumb);
+			GdkPixbuf *base = gdk_pixbuf_new(GDK_COLORSPACE_RGB,
+					FALSE, 8, width, height);
+
+			gdk_pixbuf_fill(base,
+					((guint8) (thumb_bg.red * 255) << 24) |
+					((guint8) (thumb_bg.green * 255) << 16) |
+					((guint8) (thumb_bg.blue * 255) << 8) |
+					0xff);
+			gdk_pixbuf_composite(thumb, base, 0, 0,
+					width, height,
+					0, 0, 1.0, 1.0,
+					GDK_INTERP_BILINEAR, 255);
+			to_save = base;
+		}
+
 		//At least we don't need extensions being '.jpg'
-		gdk_pixbuf_save(thumb, to->str, "jpeg", NULL,
+		gdk_pixbuf_save(to_save, to->str, "jpeg", NULL,
 				"quality", "77",
 				NULL);
+		if (to_save != thumb)
+			g_object_unref(to_save);
 	}
 	else
 	{
@@ -1012,32 +1192,35 @@ err:
 	return image;
 }
 
-/* Scale src down to fit in max_w, max_h and return the new pixbuf.
- * If src is small enough, then ref it and return that.
+/* Scale src to fit in max_w, max_h and return the new pixbuf.
+ * If src already fits exactly, then ref it and return that; otherwise
+ * scale up or down preserving aspect. [20260830090533] allow upscaling
+ * beyond ICON_WIDTH/HEIGHT so panel width 70+ grows.
  */
 GdkPixbuf *scale_pixbuf(GdkPixbuf *src, int max_w, int max_h)
 {
-	int	w, h;
+	int w, h;
 
 	w = gdk_pixbuf_get_width(src);
 	h = gdk_pixbuf_get_height(src);
 
-	if (w <= max_w && h <= max_h)
-	{
-		g_object_ref(src);
-		return src;
-	}
-	else
 	{
 		float scale_x = ((float) w) / max_w;
 		float scale_y = ((float) h) / max_h;
 		float scale = MAX(scale_x, scale_y);
-		int dest_w = w / scale;
-		int dest_h = h / scale;
+		int dest_w = w / scale + 0.5f;
+		int dest_h = h / scale + 0.5f;
 
-		return gdk_pixbuf_scale_simple(src,
-						MAX(dest_w, 1),
-						MAX(dest_h, 1),
+		if (dest_w < 1)
+			dest_w = 1;
+		if (dest_h < 1)
+			dest_h = 1;
+		if (dest_w == w && dest_h == h)
+		{
+			g_object_ref(src);
+			return src;
+		}
+		return gdk_pixbuf_scale_simple(src, dest_w, dest_h,
 						GDK_INTERP_BILINEAR);
 	}
 }
@@ -1190,9 +1373,9 @@ static void load_default_pixmaps(void)
 {
 	GError *error = NULL;
 
-	im_error = mp_from_stock(GTK_STOCK_DIALOG_WARNING,
+	im_error = mp_from_stock("dialog-warning",
 				 GTK_ICON_SIZE_DIALOG);
-	im_unknown = mp_from_stock(GTK_STOCK_DIALOG_QUESTION,
+	im_unknown = mp_from_stock("dialog-question",
 				   GTK_ICON_SIZE_DIALOG);
 
 	im_dirs = load_pixmap("dirs");
@@ -1264,19 +1447,19 @@ out:
 	g_free(path);
 }
 
-static GList *thumbs_purge_cache(Option *option, xmlNode *node, guchar *label)
+static GList *thumbs_purge_cache(Option *option, xmlNode *node, gchar *label)
 {
-	GtkWidget *button, *align;
+	GtkWidget *button;
 
 	g_return_val_if_fail(option == NULL, NULL);
 
-	align = gtk_alignment_new(0, 0.5, 0, 0);
-	button = button_new_mixed(GTK_STOCK_CLEAR,
+	button = button_new_mixed("edit-clear",
 				  _("Purge thumbnails disk cache"));
-	gtk_container_add(GTK_CONTAINER(align), button);
+	gtk_widget_set_halign(button, GTK_ALIGN_START);
+	gtk_widget_set_valign(button, GTK_ALIGN_CENTER);
 	g_signal_connect(button, "clicked", G_CALLBACK(purge_disk_cache), NULL);
 
-	return g_list_append(NULL, align);
+	return g_list_append(NULL, button);
 }
 
 /* Exif reading.
@@ -1437,7 +1620,7 @@ static cairo_status_t suf_to_bufcb(void *p,
 		const unsigned char *data, unsigned int len)
 {
 	g_memory_input_stream_add_data((GMemoryInputStream *)p,
-			g_memdup(data, len), len, g_free);
+			g_memdup2(data, len), len, g_free);
 	return CAIRO_STATUS_SUCCESS;
 }
 static GdkPixbuf *suf_to_buf(cairo_surface_t *suf)
@@ -1448,7 +1631,7 @@ static GdkPixbuf *suf_to_buf(cairo_surface_t *suf)
 	g_object_unref(st);
 	return ret;
 }
-GdkPixbuf *pixmap_make_lined(GdkPixbuf *src, GdkColor *colour)
+GdkPixbuf *pixmap_make_lined(GdkPixbuf *src, GdkRGBA *colour)
 {
 	if (!(src = src ?: winicon)) return NULL;
 
@@ -1464,7 +1647,11 @@ GdkPixbuf *pixmap_make_lined(GdkPixbuf *src, GdkColor *colour)
 	cairo_paint(cr);
 
 	gdouble base = height / 14.0;
-	gdk_cairo_set_source_color(cr, colour);
+	cairo_set_source_rgba(cr,
+		colour->red,
+		colour->green,
+		colour->blue,
+		1.0);
 	cairo_set_line_width(cr, base * 2);
 	cairo_move_to(cr, 0    , height - base * 1.2);
 	cairo_line_to(cr, width, height - base * 1.2);

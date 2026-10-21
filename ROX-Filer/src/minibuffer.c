@@ -1,6 +1,7 @@
 /*
  * ROX-Filer, filer for the ROX desktop project
  * Copyright (C) 2006, Thomas Leonard and others (see changelog for details).
+ * Copyright (C) 2026, step <step.commons@gmail.com>.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the Free
@@ -78,11 +79,14 @@ static void view_select_if_reg(ViewIface *obj, const gchar *pattern);
 
 static Option o_filer_beep_fail, o_filer_beep_multi;
 static Option o_mini_stdout, o_mini_errout;
+Option o_group_digits_modifier;
 
 void minibuffer_init(void)
 {
 	option_add_int(&o_filer_beep_fail, "filer_beep_fail", 1);
 	option_add_int(&o_filer_beep_multi, "filer_beep_multi", 1);
+	option_add_int(&o_group_digits_modifier,
+			"group_digits_modifier", FALSE);
 
 	//todo: which category?
 	option_add_string(&o_mini_stdout, "mini_stdout",
@@ -98,7 +102,8 @@ void create_minibuffer(FilerWindow *filer_window)
 {
 	GtkWidget *hbox, *label, *mini;
 
-	hbox = gtk_hbox_new(FALSE, 0);
+	hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+	gtk_widget_set_name(hbox, "rox-minibuffer-area");
 
 	gtk_box_pack_start(GTK_BOX(hbox),
 			new_help_button((HelpFunc) show_help, filer_window),
@@ -109,7 +114,7 @@ void create_minibuffer(FilerWindow *filer_window)
 
 	mini = gtk_entry_new();
 	gtk_box_pack_start(GTK_BOX(hbox), mini, TRUE, TRUE, 0);
-	gtk_widget_set_name(mini, "fixed-style");
+	gtk_widget_set_name(mini, "rox-minibuffer");
 	g_signal_connect(mini, "key_press_event",
 			G_CALLBACK(key_press_event), filer_window);
 	g_signal_connect(mini, "changed", G_CALLBACK(changed), filer_window);
@@ -221,8 +226,8 @@ void minibuffer_show(FilerWindow *filer_window, MiniType mini_type, guint keyval
 				gtk_entry_set_text(mini, " \"$@\" ");
 			else if (item)
 			{
-				guchar *escaped;
-				guchar *tmp;
+				gchar *escaped;
+				gchar *tmp;
 
 				escaped = shell_escape(item->leafname);
 				tmp = g_strconcat(" ", escaped, " ", NULL);
@@ -259,7 +264,16 @@ void minibuffer_hide(FilerWindow *filer_window)
 
 	gtk_widget_hide(filer_window->minibuffer_area);
 
-	gtk_widget_child_focus(filer_window->window, GTK_DIR_TAB_FORWARD);
+	if (gtk_widget_in_destruction(filer_window->window))
+		return;
+
+	if (!filer_window->regexp)
+	{
+		if (filer_window->view)
+			gtk_widget_grab_focus(GTK_WIDGET(filer_window->view));
+		else
+			gtk_widget_child_focus(filer_window->window, GTK_DIR_TAB_FORWARD);
+	}
 
 	if (filer_window->temp_show_hidden)
 	{
@@ -285,7 +299,7 @@ void minibuffer_hide(FilerWindow *filer_window)
  */
 void minibuffer_add(FilerWindow *filer_window, const gchar *leafname)
 {
-	guchar		*esc;
+	gchar		*esc;
 	GtkEditable 	*edit = GTK_EDITABLE(filer_window->minibuffer);
 	GtkEntry 	*entry = GTK_ENTRY(edit);
 	int		pos;
@@ -388,7 +402,7 @@ static void path_return_pressed(FilerWindow *filer_window, GdkEventKey *event)
 	item = iter.peek(&iter);
 	if (item == NULL || !matches(&iter, pattern))
 	{
-		gdk_beep();
+		gdk_display_beep(gdk_display_get_default());
 		return;
 	}
 
@@ -416,7 +430,7 @@ static void complete(FilerWindow *filer_window)
 
 	if (!item)
 	{
-		gdk_beep();
+		gdk_display_beep(gdk_display_get_default());
 		return;
 	}
 
@@ -426,14 +440,14 @@ static void complete(FilerWindow *filer_window)
 	leaf = strrchr(text, '/');
 	if (!leaf)
 	{
-		gdk_beep();
+		gdk_display_beep(gdk_display_get_default());
 		return;
 	}
 
 	leaf++;
 	if (!matches(&cursor, leaf))
 	{
-		gdk_beep();
+		gdk_display_beep(gdk_display_get_default());
 		return;
 	}
 
@@ -473,7 +487,7 @@ static void complete(FilerWindow *filer_window)
 	{
 		/* We didn't add anything... */
 		if (o_filer_beep_fail.int_value)
-			gdk_beep();
+			gdk_display_beep(gdk_display_get_default());
 	}
 	else if (current_stem < shortest_stem)
 	{
@@ -489,7 +503,7 @@ static void complete(FilerWindow *filer_window)
 		 */
 		tmp_pos = leaf - text; /* index of start of leaf */
 		gtk_editable_delete_text(GTK_EDITABLE(entry),
-					 tmp_pos, entry->text_length);
+					 tmp_pos, gtk_entry_get_text_length(entry));
 		gtk_editable_insert_text(GTK_EDITABLE(entry),
 					 item->leafname, shortest_stem,
 					 &tmp_pos);
@@ -497,11 +511,11 @@ static void complete(FilerWindow *filer_window)
 		gtk_editable_set_position(GTK_EDITABLE(entry), -1);
 
 		if (o_filer_beep_multi.int_value)
-			gdk_beep();
+			gdk_display_beep(gdk_display_get_default());
 	}
 	else
 	{
-		const guchar *new;
+		const gchar *new;
 
 		new = make_path(filer_window->sym_path, item->leafname);
 
@@ -720,9 +734,9 @@ static void search_in_dir(FilerWindow *filer_window, int dir)
 
 static void add_to_history(const gchar *line)
 {
-	guchar 	*last;
+	gchar 	*last;
 
-	last = shell_history ? (guchar *) shell_history->data : NULL;
+	last = shell_history ? (gchar *) shell_history->data : NULL;
 
 	if (last && strcmp(last, line) == 0)
 		return;			/* Duplicating last entry */
@@ -740,19 +754,19 @@ static void shell_done(FilerWindow *filer_window)
  * Special chars are escaped. If there is only a single (non-dir) match
  * then a trailing space is added.
  */
-static guchar *best_match(FilerWindow *filer_window, glob_t *matches)
+static gchar *best_match(FilerWindow *filer_window, glob_t *matches)
 {
 	gchar	*first = matches->gl_pathv[0];
 	int	i;
 	int	longest, path_len;
-	guchar	*path, *tmp;
+	gchar	*path, *tmp;
 
 	longest = strlen(first);
 
 	for (i = 1; i < matches->gl_pathc; i++)
 	{
 		int	j;
-		guchar	*m = matches->gl_pathv[i];
+		gchar	*m = matches->gl_pathv[i];
 
 		for (j = 0; j < longest; j++)
 			if (m[j] != first[j])
@@ -796,7 +810,7 @@ static void shell_tab(FilerWindow *filer_window)
 
 	for (i = 0; i < pos; i++)
 	{
-		guchar	c = entry[i];
+		gchar	c = entry[i];
 
 		if (leaf->len == 0)
 			leaf_start = i;
@@ -812,7 +826,7 @@ static void shell_tab(FilerWindow *filer_window)
 		{
 			for (++i; i < pos; i++)
 			{
-				guchar cc = entry[i];
+				gchar cc = entry[i];
 
 				if (cc == '\\' && i + 1 < pos)
 					cc = entry[++i];
@@ -845,7 +859,7 @@ static void shell_tab(FilerWindow *filer_window)
 	{
 		if (matches.gl_pathc > 0)
 		{
-			guchar		*best;
+			gchar		*best;
 			GtkEditable 	*edit =
 				GTK_EDITABLE(filer_window->minibuffer);
 
@@ -859,7 +873,7 @@ static void shell_tab(FilerWindow *filer_window)
 			g_free(best);
 		}
 		if (matches.gl_pathc != 1)
-			gdk_beep();
+			gdk_display_beep(gdk_display_get_default());
 
 		globfree(&matches);
 	}
@@ -966,12 +980,12 @@ static void shell_return_pressed(FilerWindow *filer_window)
 		if (out_f)
 		{
 			GIOChannel *outch = g_io_channel_unix_new(out);
-			g_io_add_watch(outch, G_IO_IN | G_IO_HUP, out_cb, strdup(filer_window->sym_path));
+			g_io_add_watch(outch, G_IO_IN | G_IO_HUP | G_IO_ERR, out_cb, strdup(filer_window->sym_path));
 		}
 		if (errout_f)
 		{
 			GIOChannel *erroutch = g_io_channel_unix_new(errout);
-			g_io_add_watch(erroutch, G_IO_IN | G_IO_HUP, errout_cb, strdup(filer_window->sym_path));
+			g_io_add_watch(erroutch, G_IO_IN | G_IO_HUP | G_IO_ERR, errout_cb, strdup(filer_window->sym_path));
 		}
 	}
 
@@ -984,7 +998,7 @@ out:
 /* Move through the shell history */
 static void shell_recall(FilerWindow *filer_window, int dir)
 {
-	guchar	*command;
+	gchar	*command;
 	int	pos = filer_window->mini_cursor_base;
 
 	pos += dir;
@@ -1107,7 +1121,7 @@ static gint key_press_event(GtkWidget	*widget,
 {
 	ViewIter cursor;
 
-	if (event->keyval == GDK_Escape)
+	if (event->keyval == GDK_KEY_Escape)
 	{
 		if (filer_window->mini_type == MINI_SHELL)
 		{
@@ -1142,22 +1156,22 @@ static gint key_press_event(GtkWidget	*widget,
 		case MINI_PATH:
 			switch (event->keyval)
 			{
-				case GDK_Up:
-				case GDK_KEY_KP_Up:
-					search_in_dir(filer_window, -1);
-					break;
-				case GDK_Down:
-				case GDK_KEY_KP_Down:
-					search_in_dir(filer_window, 1);
-					break;
-				case GDK_Return:
-				case GDK_KP_Enter:
+			case GDK_KEY_Up:
+			case GDK_KEY_KP_Up:
+				search_in_dir(filer_window, -1);
+				break;
+			case GDK_KEY_Down:
+			case GDK_KEY_KP_Down:
+				search_in_dir(filer_window, 1);
+				break;
+			case GDK_KEY_Return:
+			case GDK_KEY_KP_Enter:
 					path_return_pressed(filer_window,
 								event);
 					break;
-				case GDK_Tab:
-					complete(filer_window);
-					break;
+			case GDK_KEY_Tab:
+				complete(filer_window);
+				break;
 				default:
 					return FALSE;
 			}
@@ -1166,19 +1180,19 @@ static gint key_press_event(GtkWidget	*widget,
 		case MINI_SHELL:
 			switch (event->keyval)
 			{
-				case GDK_Up:
-				case GDK_KEY_KP_Up:
-					shell_recall(filer_window, 1);
-					break;
-				case GDK_Down:
-				case GDK_KEY_KP_Down:
-					shell_recall(filer_window, -1);
-					break;
-				case GDK_Tab:
-					shell_tab(filer_window);
-					break;
-				case GDK_Return:
-				case GDK_KP_Enter:
+			case GDK_KEY_Up:
+			case GDK_KEY_KP_Up:
+				shell_recall(filer_window, 1);
+				break;
+			case GDK_KEY_Down:
+			case GDK_KEY_KP_Down:
+				shell_recall(filer_window, -1);
+				break;
+			case GDK_KEY_Tab:
+				shell_tab(filer_window);
+				break;
+			case GDK_KEY_Return:
+			case GDK_KEY_KP_Enter:
 					shell_return_pressed(filer_window);
 					break;
 				default:
@@ -1188,18 +1202,18 @@ static gint key_press_event(GtkWidget	*widget,
 		case MINI_SELECT_IF:
 			switch (event->keyval)
 			{
-				case GDK_Up:
-				case GDK_KEY_KP_Up:
-					shell_recall(filer_window, 1);
-					break;
-				case GDK_Down:
-				case GDK_KEY_KP_Down:
-					shell_recall(filer_window, -1);
-					break;
-				case GDK_Tab:
-					break;
-				case GDK_Return:
-				case GDK_KP_Enter:
+			case GDK_KEY_Up:
+			case GDK_KEY_KP_Up:
+				shell_recall(filer_window, 1);
+				break;
+			case GDK_KEY_Down:
+			case GDK_KEY_KP_Down:
+				shell_recall(filer_window, -1);
+				break;
+			case GDK_KEY_Tab:
+				break;
+			case GDK_KEY_Return:
+			case GDK_KEY_KP_Enter:
 					select_return_pressed(filer_window,
 								event->time);
 					break;
@@ -1210,9 +1224,9 @@ static gint key_press_event(GtkWidget	*widget,
 		case MINI_REG_SELECT:
 			switch (event->keyval)
 			{
-			case GDK_Page_Up:
+			case GDK_KEY_Page_Up:
 			case GDK_KEY_KP_Page_Up:
-			case GDK_Page_Down:
+			case GDK_KEY_Page_Down:
 			case GDK_KEY_KP_Page_Down:
 				if (filer_window->view_type == VIEW_TYPE_COLLECTION)
 					gtk_widget_event(GTK_WIDGET(
@@ -1224,18 +1238,18 @@ static gint key_press_event(GtkWidget	*widget,
 					gtk_widget_grab_focus(filer_window->minibuffer);
 				}
 				return TRUE;
-			case GDK_ISO_Left_Tab:
-			case GDK_Up:
+			case GDK_KEY_ISO_Left_Tab:
+			case GDK_KEY_Up:
 			case GDK_KEY_KP_Up:
 				filer_next_selected(filer_window, -1);
 				break;
-			case GDK_Tab:
-			case GDK_Down:
+			case GDK_KEY_Tab:
+			case GDK_KEY_Down:
 			case GDK_KEY_KP_Down:
 				filer_next_selected(filer_window, 1);
 				break;
-			case GDK_Return:
-			case GDK_KP_Enter:
+			case GDK_KEY_Return:
+			case GDK_KEY_KP_Enter:
 				if ((event->state & GDK_SHIFT_MASK) != 0)
 					temp_filter_return_pressed(filer_window,
 							event->time);
@@ -1249,18 +1263,18 @@ static gint key_press_event(GtkWidget	*widget,
 		case MINI_SELECT_BY_NAME:
 			switch (event->keyval)
 			{
-				case GDK_ISO_Left_Tab:
-				case GDK_Up:
+				case GDK_KEY_ISO_Left_Tab:
+				case GDK_KEY_Up:
 				case GDK_KEY_KP_Up:
 					filer_next_selected(filer_window, -1);
 					break;
-				case GDK_Tab:
-				case GDK_Down:
+				case GDK_KEY_Tab:
+				case GDK_KEY_Down:
 				case GDK_KEY_KP_Down:
 					filer_next_selected(filer_window, 1);
 					break;
-				case GDK_Return:
-				case GDK_KP_Enter:
+				case GDK_KEY_Return:
+				case GDK_KEY_KP_Enter:
 					minibuffer_hide(filer_window);
 					break;
 				default:
@@ -1270,8 +1284,8 @@ static gint key_press_event(GtkWidget	*widget,
 		case MINI_FILTER:
 			switch (event->keyval)
 			{
-				case GDK_Return:
-				case GDK_KP_Enter:
+				case GDK_KEY_Return:
+				case GDK_KEY_KP_Enter:
 					filter_return_pressed(filer_window,
 								event->time);
 					break;
@@ -1282,15 +1296,15 @@ static gint key_press_event(GtkWidget	*widget,
 		case MINI_TEMP_FILTER:
 			switch (event->keyval)
 			{
-			case GDK_Tab:
+			case GDK_KEY_Tab:
 				gtk_widget_grab_focus(GTK_WIDGET(filer_window->view));
 				break;
-			case GDK_Up:
+			case GDK_KEY_Up:
 			case GDK_KEY_KP_Up:
-			case GDK_Down:
+			case GDK_KEY_Down:
 			case GDK_KEY_KP_Down:
 			{
-				gint back = (event->keyval == GDK_Up ||
+				gint back = (event->keyval == GDK_KEY_Up ||
 					event->keyval == GDK_KEY_KP_Up) ? VIEW_ITER_BACKWARDS : 0;
 				view_get_iter(filer_window->view, &cursor,
 						back | VIEW_ITER_FROM_CURSOR);
@@ -1302,9 +1316,9 @@ static gint key_press_event(GtkWidget	*widget,
 					view_cursor_to_iter(filer_window->view, &cursor);
 				break;
 			}
-			case GDK_Page_Up:
+			case GDK_KEY_Page_Up:
 			case GDK_KEY_KP_Page_Up:
-			case GDK_Page_Down:
+			case GDK_KEY_Page_Down:
 			case GDK_KEY_KP_Page_Down:
 				if (filer_window->view_type == VIEW_TYPE_COLLECTION)
 					gtk_widget_event(GTK_WIDGET(
@@ -1316,8 +1330,8 @@ static gint key_press_event(GtkWidget	*widget,
 					gtk_widget_grab_focus(filer_window->minibuffer);
 				}
 				return TRUE;
-			case GDK_Return:
-			case GDK_KP_Enter:
+		case GDK_KEY_Return:
+		case GDK_KEY_KP_Enter:
 				temp_filter_return_pressed(filer_window,
 							event->time);
 				break;

@@ -1,4 +1,5 @@
 <?xml version="1.0"?>
+<!-- rox-filer-gtk3 is the GTK3 port of jun7's ROX-Filer by step <step.public@gmail.com> -->
 <AppInfo>
   <Summary xml:lang="en">A graphical file manager</Summary>
   <Summary xml:lang="de">Ein grafischer Dateimanager</Summary>
@@ -13,64 +14,64 @@
   <Summary xml:lang="gl">Xestor gr&#xE1;afico de arquivos</Summary>
   <About xml:lang="en">
     <Purpose>File manager</Purpose>
-    <Version>2.11</Version>
-    <Authors>Thomas Leonard and others</Authors>
-    <License>GNU General Public License</License>
-    <Homepage>http://rox.sourceforge.net</Homepage>
+    <Version>2026.0.0b2</Version>
+    <Authors>1999-2014: Thomas Leonard and others; 2015-2023: jun7; 2026 (GTK3): step</Authors>
+    <License>GNU General Public License version 2</License>
+    <Homepage>https://github.com/step-/rox-filer-gtk3</Homepage>
   </About>
   <About xml:lang="es">
 	  <Purpose label="Prop&#xF3;sito">Gestor de Archivos</Purpose>
-	  <Authors label="Autores">Thomas Leonard y otros</Authors>
+	  <Authors label="Autores">1999-2014: Thomas Leonard y otros; 2015-2023: jun7; 2026 (gtk3): step</Authors>
 	  <License label="Licencia">Licencia P&#xFA;blica General GNU</License>
-	  <Homepage label="P&#xE1;gina web"/>
+	  <Homepage label="P&#xE1;gina web">https://github.com/step-/rox-filer-gtk3</Homepage>
   </About>
   <About xml:lang="de">
     <Purpose>Dateimanager</Purpose>
-    <Authors>Thomas Leonard und andere</Authors>
+    <Authors>1999-2014: Thomas Leonard und andere; 2015-2023: jun7; 2026 (gtk3): step</Authors>
   </About>
   <About xml:lang="fr">
     <Purpose label="Fonction">Gestionnaire de fichiers</Purpose>
-    <Authors label="Auteurs">Thomas Leonard et autres</Authors>
+    <Authors label="Auteurs">1999-2014: Thomas Leonard et autres; 2015-2023: jun7; 2026 (gtk3): step</Authors>
     <License label="Licence"/>
-    <Homepage label="Page web"/>
+    <Homepage label="Page web">https://github.com/step-/rox-filer-gtk3</Homepage>
   </About>
   <About xml:lang="hu">
     <Purpose label="Feladat">Fájlkezelés</Purpose>
     <Version label="Verzió"/>
-    <Authors label="Szerzők">Thomas Leonard és mások</Authors>
+    <Authors label="Szerzők">1999-2014: Thomas Leonard és mások; 2015-2023: jun7; 2026 (gtk3): step</Authors>
     <License label="Licenc"/>
-    <Homepage label="Honlap"/>
+    <Homepage label="Honlap">https://github.com/step-/rox-filer-gtk3</Homepage>
   </About>
   <About xml:lang="it">
     <Purpose label="Scopo">gestione file</Purpose>
     <Version label="Versione"/>
-    <Authors label="Autori">Thomas Leonard e altri</Authors>
+    <Authors label="Autori">1999-2014: Thomas Leonard e altri; 2015-2023: jun7; 2026 (gtk3): step</Authors>
     <License label="Licenza"/>
-    <Homepage label="Sito web"/>
+    <Homepage label="Sito web">https://github.com/step-/rox-filer-gtk3</Homepage>
   </About>
   <About xml:lang="pl">
     <Purpose>Manager plików</Purpose>
-    <Authors>Thomas Leonard i inni</Authors>
+    <Authors>1999-2014: Thomas Leonard i inni; 2015-2023: jun7; 2026 (gtk3): step</Authors>
   </About>
   <About xml:lang="zh_CN">
     <Purpose label="功能">文件管理员</Purpose>
     <Version label="版本"/>
     <Authors label="作者"/>
     <License label="版权"/>
-    <Homepage label="网页"/>
+    <Homepage label="网页">https://github.com/step-/rox-filer-gtk3</Homepage>
   </About>
     <About xml:lang="zh_TW">
     <Purpose label="功能">檔案管理員</Purpose>
     <Version label="版本"/>
     <Authors label="作者"/>
     <License label="版權"/>
-    <Homepage label="網頁"/>
+    <Homepage label="網頁">https://github.com/step-/rox-filer-gtk3</Homepage>
   </About>
   <About xml:lang="gl">
 	<Purpose label="Prop&#xF3;sito">Xestor de arquivos</Purpose>
-	<Authors label="Autores">Thomas Leonard e outros</Authors>
+	<Authors label="Autores">1999-2014: Thomas Leonard e outros; 2015-2023: jun7; 2026 (gtk3): step</Authors>
 	<License label="Licencia">Licencia P&#xFA;blica Xeral GNU</License>
-	<Homepage label="P&#xE1;xina web">http://rox.sourceforge.net</Homepage>
+	<Homepage label="P&#xE1;xina web">https://github.com/step-/rox-filer-gtk3</Homepage>
  </About>
   <AppMenu>
     <Item option="-p=Default">
@@ -81,9 +82,9 @@
       <Label xml:lang="fr">Activer le punaiseur</Label>
       <Label xml:lang="pl">Włącza pulpit</Label>
       <Label xml:lang="it">Attiva la bacheca</Label>
-      <Label xml:lang="zh_CN">启用桌面功能</Label>    
+      <Label xml:lang="zh_CN">启用桌面功能</Label>
       <Label xml:lang="zh_TW">啟用桌面功能</Label>
-	<Label xml:lang="gl">Activarar o taboleiro</Label>
+      <Label xml:lang="gl">Activarar o taboleiro</Label>
     </Item>
     <Item option="-p=">
       <Label>Disable pinboard</Label>
@@ -93,9 +94,9 @@
       <Label xml:lang="fr">Désactiver le punaiseur</Label>
       <Label xml:lang="pl">Wyłącza pulpit</Label>
       <Label xml:lang="it">Disattiva la bacheca</Label>
-      <Label xml:lang="zh_CN">停用桌面功能</Label>    
+      <Label xml:lang="zh_CN">停用桌面功能</Label>
       <Label xml:lang="zh_TW">停用桌面功能</Label>
-	<Label xml:lang="gl">Desactivar o taboleiro</Label>
+      <Label xml:lang="gl">Desactivar o taboleiro</Label>
     </Item>
   </AppMenu>
 </AppInfo>

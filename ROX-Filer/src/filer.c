@@ -1,6 +1,7 @@
 /*
  * ROX-Filer, filer for the ROX desktop project
  * Copyright (C) 2006, Thomas Leonard and others (see changelog for details).
+ * Copyright (C) 2026, step <step.commons@gmail.com>.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the Free
@@ -161,6 +162,8 @@ static void set_selection_state(FilerWindow *filer_window, gboolean normal);
 static void filer_next_thumb(GObject *window, const gchar *path);
 static void start_thumb_scanning(FilerWindow *filer_window);
 static void filer_options_changed(void);
+static void drag_begin(GtkWidget *widget, GdkDragContext *context,
+		       FilerWindow *filer_window);
 static void drag_end(GtkWidget *widget, GdkDragContext *context,
 		     FilerWindow *filer_window);
 static void drag_leave(GtkWidget	*widget,
@@ -193,6 +196,10 @@ static GdkCursor *blank_cursor = NULL;
  */
 static gboolean not_local = FALSE;
 
+/* TRUE while navigating via filer_go_back/forward, so the capture hook in
+ * filer_change_to moves between stacks instead of pushing [20260825105933]. */
+static gboolean navigating_history = FALSE;
+
 static Option o_short_flag_names;
 static Option o_filer_view_type;
 Option o_filer_auto_resize, o_unique_filer_windows;
@@ -213,7 +220,7 @@ static gpointer checklocal(gpointer p)
 	 * run remotely? See filer_set_title().
 	 */
 	const gchar *ohost   = our_host_name(TRUE);
-	      gchar *dpyhost = g_strdup(gdk_get_display());
+	gchar *dpyhost = g_strdup(gdk_display_get_name(gdk_display_get_default()));
 	gchar *sep = strchr(dpyhost, ':');
 	if (sep) *sep = '\0';
 
@@ -235,12 +242,12 @@ void filer_init(void)
 {
 	option_add_int(&o_filer_size_limit, "filer_size_limit", 60);
 	option_add_int(&o_filer_width_limit, "filer_width_limit", 0);
-	option_add_int(&o_filer_auto_resize, "filer_auto_resize", RESIZE_ALWAYS);
+	option_add_int(&o_filer_auto_resize, "filer_auto_resize", RESIZE_STYLE);
 
-	option_add_int(&o_unique_filer_windows, "filer_unique_windows", 1);
-	option_add_int(&o_short_flag_names, "filer_short_flag_names", TRUE);
+	option_add_int(&o_unique_filer_windows, "filer_unique_windows", 0);
+	option_add_int(&o_short_flag_names, "filer_short_flag_names", FALSE);
 	option_add_int(&o_filer_view_type, "filer_view_type", VIEW_TYPE_COLLECTION);
-	option_add_int(&o_window_link, "window_link", 1);
+	option_add_int(&o_window_link, "window_link", 0);
 	option_add_int(&o_scroll_speed, "scroll_speed", 6);
 	option_add_int(&o_hide_root_msg, "hide_root_msg", FALSE);
 
@@ -252,10 +259,10 @@ void filer_init(void)
 
 	option_add_notify(filer_options_changed);
 
-	busy_cursor = gdk_cursor_new(GDK_WATCH);
-	crosshair = gdk_cursor_new(GDK_CROSSHAIR);
-	hand_cursor = gdk_cursor_new(GDK_HAND2);
-	blank_cursor = gdk_cursor_new(GDK_BLANK_CURSOR);
+	busy_cursor = gdk_cursor_new_for_display(gdk_display_get_default(), GDK_WATCH);
+	crosshair = gdk_cursor_new_for_display(gdk_display_get_default(), GDK_CROSSHAIR);
+	hand_cursor = gdk_cursor_new_for_display(gdk_display_get_default(), GDK_HAND2);
+	blank_cursor = gdk_cursor_new_for_display(gdk_display_get_default(), GDK_BLANK_CURSOR);
 
 
 	window_with_id = g_hash_table_new_full(g_str_hash, g_str_equal,
@@ -283,9 +290,10 @@ void filer_window_set_size(FilerWindow *filer_window, int w, int h, gboolean not
 	Settings *set = (Settings *) g_hash_table_lookup(
 			settings_table, filer_window->sym_path);
 	GtkWidget *window = filer_window->window;
-	GdkWindow *gdk_window = window->window;
+	GdkWindow *gdk_window = gtk_widget_get_window(window);
 	if (!gdk_window) return;
-	GtkRequisition *req = &window->requisition;
+	GtkRequisition req;
+	gtk_widget_get_preferred_size(window, &req, NULL);
 	gint dx = 0, dy = 0, px = 0, py = 0;
 
 	if (filer_window->req_width >= 0)
@@ -302,34 +310,44 @@ void filer_window_set_size(FilerWindow *filer_window, int w, int h, gboolean not
 	else
 	{
 		if (filer_window->scrollbar)
-			w += filer_window->scrollbar->allocation.width;
+			w += gtk_widget_get_allocated_width(filer_window->scrollbar);
 
 		if (o_toolbar.int_value != TOOLBAR_NONE)
-			h += filer_window->toolbar->allocation.height;
+			h += gtk_widget_get_allocated_height(filer_window->toolbar);
 		if (gtk_widget_get_visible(filer_window->message))
-			h += filer_window->message->allocation.height;
+			h += gtk_widget_get_allocated_height(filer_window->message);
 	}
 
-	w = MAX(req->width, w);
-	h = MAX(req->height, h);
+	w = MAX(req.width, w);
+	h = MAX(req.height, h);
 
 	if (o_auto_move.int_value || filer_window->reqx >= 0)
 	{
-		gint x, y, m, currentw, currenth, bcw, bch, lx, ly, mxend, myend;
+		gint x, y, currentw, currenth, bcw, bch, lx, ly, mxend, myend;
 		GdkRectangle frect = {0, 0, 0, 0};
 
-		gdk_window_get_pointer(NULL, &x, &y, NULL);
-		m = gdk_screen_get_monitor_at_point(gdk_screen_get_default(), x, y);
+		GdkRectangle mon_rect;
 
-		gdk_window_get_geometry(gdk_window, NULL, NULL, &bcw, &bch, NULL);
+		gui_get_pointer(NULL, &x, &y, NULL);
+		{
+			GdkMonitor *mon = gdk_display_get_monitor_at_point(
+					gdk_display_get_default(), x, y);
+			if (mon)
+				gdk_monitor_get_geometry(mon, &mon_rect);
+			else
+				mon_rect = (GdkRectangle) {0, 0, screen_width,
+					screen_height};
+		}
+
+		gdk_window_get_geometry(gdk_window, NULL, NULL, &bcw, &bch);
 		gdk_window_get_frame_extents(gdk_window, &frect);
-		gdk_window_get_geometry(gdk_window, NULL, NULL, &currentw, &currenth, NULL);
+		gdk_window_get_geometry(gdk_window, NULL, NULL, &currentw, &currenth);
 		/* If delay happens between bc and current then get after. */
 		if (bcw != currentw || bch != currenth)
 			gdk_window_get_frame_extents(gdk_window, &frect);
 
-		mxend = monitor_geom[m].x + monitor_geom[m].width;
-		myend = monitor_geom[m].y + monitor_geom[m].height;
+		mxend = mon_rect.x + mon_rect.width;
+		myend = mon_rect.y + mon_rect.height;
 
 		if (frect.x + frect.width > mxend ||
 			frect.y + frect.height > myend)
@@ -382,10 +400,10 @@ void filer_window_set_size(FilerWindow *filer_window, int w, int h, gboolean not
 		{
 			if (gtk_window_is_active(GTK_WINDOW(window)) && !o_disable_pointer_warp.int_value)
 			{
-				gdk_window_get_pointer(gdk_window, &px, &py, NULL);
-				XWarpPointer(gdk_x11_drawable_get_xdisplay(gdk_window),
+				gui_get_pointer(gdk_window, &px, &py, NULL);
+				XWarpPointer(gdk_x11_display_get_xdisplay(gdk_window_get_display(gdk_window)),
 						None,
-						gdk_x11_drawable_get_xid(gdk_window),
+						gdk_x11_window_get_xid(gdk_window),
 						0, 0, 0, 0,
 						px + dx, py + dy);
 			}
@@ -426,11 +444,11 @@ void filer_window_set_size(FilerWindow *filer_window, int w, int h, gboolean not
 			int nx, ny;
 
 			if (dx == 0 && dy == 0)
-				gdk_window_get_pointer(gdk_window,
+				gui_get_pointer(gdk_window,
 						&px, &py, NULL);
 
 			if (filer_window->scrollbar)
-				w -= filer_window->scrollbar->allocation.width;
+				w -= gtk_widget_get_allocated_width(filer_window->scrollbar);
 
 			nx = CLAMP(px, 2, w - 2);
 			ny = CLAMP(py, 2, h - 2);
@@ -438,9 +456,9 @@ void filer_window_set_size(FilerWindow *filer_window, int w, int h, gboolean not
 			if (nx != px || ny != py)
 			{
 				XWarpPointer(
-						gdk_x11_drawable_get_xdisplay(gdk_window),
+						gdk_x11_display_get_xdisplay(gdk_window_get_display(gdk_window)),
 						None,
-						gdk_x11_drawable_get_xid(gdk_window),
+						gdk_x11_window_get_xid(gdk_window),
 						0, 0, 0, 0,
 						nx + dx, ny + dy);
 			}
@@ -460,13 +478,13 @@ static gboolean acceptfocuscb(FilerWindow *fw)
 void filer_link(FilerWindow *left, FilerWindow *right)
 {
 	GdkRectangle frect = {0, 0, 0, 0};
-	gdk_window_get_frame_extents(left->window->window, &frect);
+	gdk_window_get_frame_extents(gtk_widget_get_window(left->window), &frect);
 	gtk_window_move(GTK_WINDOW(right->window),
 			frect.x + frect.width,
 			frect.y);
 
 	gtk_window_set_accept_focus(GTK_WINDOW(right->window), FALSE);
-	gdk_window_raise(right->window->window);
+	gdk_window_raise(gtk_widget_get_window(right->window));
 	if (right->accept_timeout)
 		g_source_remove(right->accept_timeout);
 	right->accept_timeout =
@@ -499,17 +517,17 @@ static gboolean _set_pointer(void *vp)
 	fw->pointer_idle = 0;
 	if (!g_list_find(all_filer_windows, fw)) return FALSE;//destroyed
 
-	GdkWindow *gwin = gdk_window_get_pointer(fw->window->window, NULL, NULL, NULL);
+	GdkWindow *gwin = gui_get_pointer(gtk_widget_get_window(fw->window), NULL, NULL, NULL);
 
-	if (GTK_WIDGET(fw->view)->window == gwin)
+	if (gtk_widget_get_window(GTK_WIDGET(fw->view)) == gwin)
 	{
-		gdk_window_get_pointer(gwin, &x, &y, NULL);
+		gui_get_pointer(gwin, &x, &y, NULL);
 
 		view_get_iter_at_point(fw->view, &iter, gwin, x, y);
 		item = iter.peek(&iter);
 	}
 
-	gdk_window_set_cursor(fw->window->window,
+	gdk_window_set_cursor(gtk_widget_get_window(fw->window),
 			item ? hand_cursor : NULL);
 
 	return FALSE;
@@ -521,15 +539,18 @@ static void filer_set_pointer(FilerWindow *fw)
 }
 
 void filer_autosize(FilerWindow *fw) {
+	gboolean resize;
 
 	if (!fw->directory) return;
 
-	if (fw->may_resize)
+	resize = o_filer_auto_resize.int_value == RESIZE_ALWAYS ||
+		fw->new_win_first_scan;
+
+	if (fw->may_resize && resize)
 		view_style_changed(fw->view, 0);
 	fw->may_resize = FALSE;
 
-	if (o_filer_auto_resize.int_value != RESIZE_ALWAYS &&
-			!fw->new_win_first_scan)
+	if (!resize)
 		return;
 
 	gint w,h;
@@ -594,9 +615,9 @@ static void update_display(Directory *dir,
 				gtk_widget_queue_draw(GTK_WIDGET(view));
 			}
 
-			GdkColor *tmpc = xlabel_get(fw->sym_path);
+			GdkRGBA *tmpc = xlabel_get(fw->sym_path);
 			if ((!tmpc) != (!fw->dir_colour) || (tmpc && fw->dir_colour
-					&& !gdk_color_equal(tmpc, fw->dir_colour)))
+					&& !gdk_rgba_equal(tmpc, fw->dir_colour)))
 				gtk_widget_queue_draw(GTK_WIDGET(view));
 			g_free(fw->dir_colour);
 			fw->dir_colour = tmpc;
@@ -631,6 +652,17 @@ static void update_display(Directory *dir,
 			{
 				filer_create_thumbs(filer_window, NULL);
 				filer_set_pointer(filer_window);
+
+				/* Establish the keyboard selection cursor for a
+				 * brand-new window so the focus indicator is
+				 * drawn. No-op for the details view; only
+				 * affects the icon view. (Directory changes
+				 * within an existing window are handled by
+				 * filer_change_to().)
+				 */
+				if (filer_window->new_win_first_scan &&
+						view_count_items(filer_window->view) > 0)
+					view_show_cursor(filer_window->view);
 			}
 
 			filer_window->may_resize = FALSE;
@@ -695,8 +727,8 @@ static void update_display(Directory *dir,
 
 static void attach(FilerWindow *filer_window)
 {
-	gdk_window_set_cursor(filer_window->window->window, busy_cursor);
-	gdk_flush();
+	gdk_window_set_cursor(gtk_widget_get_window(filer_window->window), busy_cursor);
+	gdk_display_flush(gdk_display_get_default());
 
 	view_clear(filer_window->view);
 	filer_window->scanning = TRUE;
@@ -808,8 +840,6 @@ static void unmount_dialog_response(GtkWidget *dialog,
 	g_free(mount);
 
 	gtk_widget_destroy(dialog);
-
-	one_less_window();
 }
 
 /* 'filer_window' shows a directory under 'mount'. If no other window also
@@ -885,10 +915,11 @@ static void may_offer_unmount(FilerWindow *filer_window, char *mount)
 			"Unmounting a device makes it safe to remove "
 			"the disk."));
 
+	gtk_window_set_title(GTK_WINDOW(dialog), _("Unmount"));
 	unmount_mem_btn = gtk_check_button_new_with_label(
 			_("Perform the same action in future for this mount point"));
 	gtk_widget_show(unmount_mem_btn);
-	gtk_box_pack_start(GTK_BOX(GTK_DIALOG(dialog)->vbox), unmount_mem_btn,
+	gtk_box_pack_start(GTK_BOX(gtk_dialog_get_content_area(GTK_DIALOG(dialog))), unmount_mem_btn,
 			FALSE, FALSE, 0);
 	g_object_set_data(G_OBJECT(dialog), "unmount_mem_btn",
 			unmount_mem_btn);
@@ -906,14 +937,25 @@ static void may_offer_unmount(FilerWindow *filer_window, char *mount)
 	gtk_widget_show(button);
 
 	/* We need a better icon, but I can't draw */
-	button = button_new_mixed(GTK_STOCK_UNDO, _("Eject"));
+	button = button_new_mixed("edit-undo", _("Eject"));
 	gtk_widget_set_can_default(button, TRUE);
 	gtk_dialog_add_action_widget(GTK_DIALOG(dialog), button,
 					ROX_RESPONSE_EJECT);
 	gtk_widget_show(button);
 
+	rox_dialog_set_parent_full(dialog, FALSE);
+	rox_dialog_block_exit(dialog);
+
 	g_signal_connect(G_OBJECT(dialog), "response",
 			G_CALLBACK(unmount_dialog_response), mount);
+
+	/* [20260919124406] Release the count on destroy, not on response:
+	 * Force-close destroys blockers directly without a response. */
+	g_signal_connect(dialog, "destroy",
+			G_CALLBACK(one_less_window), NULL);
+
+	/* [20260919080217] Later prompts parent to this one. */
+	rox_dialog_note_modal(dialog);
 
 	gtk_dialog_set_default_response(GTK_DIALOG(dialog),
 			GTK_RESPONSE_OK);
@@ -1015,6 +1057,8 @@ static void filer_window_destroyed(GtkWidget *widget, FilerWindow *filer_window)
 
 	g_free(filer_window->dir_colour);
 	g_free(filer_window->auto_select);
+	g_list_free_full(filer_window->back_stack, g_free);
+	g_list_free_full(filer_window->fwd_stack, g_free);
 	g_free(filer_window->real_path);
 	g_free(filer_window->sym_path);
 	g_free(filer_window);
@@ -1174,7 +1218,7 @@ void filer_openitem(FilerWindow *filer_window, ViewIter *iter, OpenFlags flags)
 	gboolean	close_mini = flags & OPEN_FROM_MINI;
 	gboolean	close_window = (flags & OPEN_CLOSE_WINDOW) != 0;
 	DirItem		*item;
-	const guchar	*full_path;
+	const gchar	*full_path;
 	gboolean	wink = TRUE;
 	Directory	*old_dir;
 
@@ -1298,7 +1342,7 @@ void filer_dir_link_next(FilerWindow *fw, GdkScrollDirection dir, gboolean botto
 		link_cursor(fw);
 	}
 	else
-		gdk_beep();
+		gdk_display_beep(gdk_display_get_default());
 }
 
 /* Move the cursor to the next selected item in direction 'dir'
@@ -1330,7 +1374,7 @@ void filer_next_selected(FilerWindow *fw, int dir)
 			link_cursor(fw);
 	}
 	else
-		gdk_beep();
+		gdk_display_beep(gdk_display_get_default());
 
 	return;
 }
@@ -1396,7 +1440,7 @@ static xmlNode *group_find(char *name)
 	gchar *path;
 
 	/* Update the groups, if possible */
-	path = choices_find_xdg_path_load("Groups.xml", PROJECT, SITE);
+	path = choices_find_xdg_path_load("Groups.xml", project_name, SITE);
 	if (path)
 	{
 		XMLwrapper *wrapper;
@@ -1414,10 +1458,10 @@ static xmlNode *group_find(char *name)
 	if (!groups)
 	{
 		groups = xml_new(NULL);
-		groups->doc = xmlNewDoc("1.0");
+		groups->doc = xmlNewDoc(BAD_CAST "1.0");
 
 		xmlDocSetRootElement(groups->doc,
-			xmlNewDocNode(groups->doc, NULL, "groups", NULL));
+			xmlNewDocNode(groups->doc, NULL, BAD_CAST "groups", NULL));
 		return NULL;
 	}
 
@@ -1425,9 +1469,9 @@ static xmlNode *group_find(char *name)
 
 	for (node = node->xmlChildrenNode; node; node = node->next)
 	{
-		guchar	*gid;
+		gchar	*gid;
 
-		gid = xmlGetProp(node, "name");
+		gid = (gchar *) xmlGetProp(node, BAD_CAST "name");
 
 		if (!gid)
 			continue;
@@ -1446,7 +1490,7 @@ static xmlNode *group_find(char *name)
 static void group_save(FilerWindow *filer_window, char *name)
 {
 	xmlNode	*group;
-	guchar	*save_path;
+	gchar	*save_path;
 	DirItem *item;
 	ViewIter iter;
 
@@ -1457,17 +1501,19 @@ static void group_save(FilerWindow *filer_window, char *name)
 		xmlFreeNode(group);
 	}
 	group = xmlNewChild(xmlDocGetRootElement(groups->doc),
-			NULL, "group", NULL);
-	xmlSetProp(group, "name", name);
+			NULL, BAD_CAST "group", NULL);
+	xmlSetProp(group, BAD_CAST "name", (const xmlChar *) name);
 
-	xmlNewTextChild(group, NULL, "directory", filer_window->sym_path);
+	xmlNewTextChild(group, NULL, BAD_CAST "directory",
+			(const xmlChar *) filer_window->sym_path);
 
 	view_get_iter(filer_window->view, &iter, VIEW_ITER_SELECTED);
 
 	while ((item = iter.next(&iter)))
-		xmlNewTextChild(group, NULL, "item", item->leafname);
+		xmlNewTextChild(group, NULL, BAD_CAST "item",
+				(const xmlChar *) item->leafname);
 
-	save_path = choices_find_xdg_path_save("Groups.xml", PROJECT, SITE,
+	save_path = choices_find_xdg_path_save("Groups.xml", project_name, SITE,
 					       TRUE);
 	if (save_path)
 	{
@@ -1484,7 +1530,7 @@ static gboolean group_restore_cb(ViewIter *iter, gpointer data)
 				   iter->peek(iter)->leafname) != NULL;
 }
 
-static void group_restore(FilerWindow *filer_window, char *name)
+void group_restore(FilerWindow *filer_window, char *name)
 {
 	GHashTable *in_group;
 	char	*path;
@@ -1494,17 +1540,28 @@ static void group_restore(FilerWindow *filer_window, char *name)
 
 	if (!group)
 	{
-		report_error(_("Group %s is not set. Select some files "
-			     "and press Ctrl+%s to set the group. Press %s "
-			     "on its own to reselect the files later.\n"
-			     "Make sure NumLock is on if you use the keypad."),
-			     name, name, name);
+		/* [20260911061827] Restore binding depends on the
+		 * group_digits_modifier option: bare digit when off,
+		 * Alt+digit when on.
+		 */
+		if (!o_group_digits_modifier.int_value)
+			report_error(_("Group %s is not set. Select some files "
+				     "and press Ctrl+%s to set the group. Press %s "
+				     "on its own to jump to the group later.\n"
+				     "Make sure NumLock is on if you use the keypad."),
+				     name, name, name);
+		else
+			report_error(_("Group %s is not set. Select some files "
+				     "and press Ctrl+%s to set the group. Press "
+				     "Alt+%s to jump to the group later.\n"
+				     "Make sure NumLock is on if you use the keypad."),
+				     name, name, name);
 		return;
 	}
 
-	node = get_subnode(group, NULL, "directory");
+	node = get_subnode(group, NULL, BAD_CAST "directory");
 	g_return_if_fail(node != NULL);
-	path = xmlNodeListGetString(groups->doc, node->xmlChildrenNode, 1);
+	path = (gchar *) xmlNodeListGetString(groups->doc, node->xmlChildrenNode, 1);
 	g_return_if_fail(path != NULL);
 
 	if (strcmp(path, filer_window->sym_path) != 0)
@@ -1517,10 +1574,10 @@ static void group_restore(FilerWindow *filer_window, char *name)
 		gchar *leaf;
 		if (node->type != XML_ELEMENT_NODE)
 			continue;
-		if (strcmp(node->name, "item") != 0)
+		if (xmlStrcmp(node->name, BAD_CAST "item") != 0)
 			continue;
 
-		leaf = xmlNodeListGetString(groups->doc,
+		leaf = (gchar *) xmlNodeListGetString(groups->doc,
 						node->xmlChildrenNode, 1);
 		if (!leaf)
 			g_warning("Missing leafname!\n");
@@ -1532,6 +1589,69 @@ static void group_restore(FilerWindow *filer_window, char *name)
 
 	g_hash_table_foreach(in_group, (GHFunc) g_free, NULL);
 	g_hash_table_destroy(in_group);
+}
+
+/* [20260913094148] Read-only snapshot of numbered-group slot 'name'
+ * for the Bookmarks menu. Returns TRUE when the slot is set, with
+ * *dir (g_free() when done) and *n_items filled in.
+ */
+gboolean group_get_info(const char *name, char **dir, int *n_items)
+{
+	xmlNode	*group, *node;
+	gchar	*path;
+
+	g_return_val_if_fail(name != NULL, FALSE);
+	g_return_val_if_fail(dir != NULL, FALSE);
+	g_return_val_if_fail(n_items != NULL, FALSE);
+
+	group = group_find((char *) name);
+	if (!group)
+		return FALSE;
+
+	node = get_subnode(group, NULL, BAD_CAST "directory");
+	g_return_val_if_fail(node != NULL, FALSE);
+	path = (gchar *) xmlNodeListGetString(groups->doc,
+					      node->xmlChildrenNode, 1);
+	g_return_val_if_fail(path != NULL, FALSE);
+
+	*n_items = 0;
+	for (node = group->xmlChildrenNode; node; node = node->next)
+	{
+		if (node->type != XML_ELEMENT_NODE)
+			continue;
+		if (xmlStrcmp(node->name, BAD_CAST "item") != 0)
+			continue;
+		(*n_items)++;
+	}
+
+	*dir = path;
+	return TRUE;
+}
+
+/* [20260913094148] Reset numbered-group slot 'name' to undefined.
+ * No-op when the slot is already unset.
+ */
+void group_clear(const char *name)
+{
+	xmlNode	*group;
+	gchar	*save_path;
+
+	g_return_if_fail(name != NULL);
+
+	group = group_find((char *) name);
+	if (!group)
+		return;
+
+	xmlUnlinkNode(group);
+	xmlFreeNode(group);
+
+	save_path = choices_find_xdg_path_save("Groups.xml", project_name,
+					       SITE, TRUE);
+	if (save_path)
+	{
+		save_xml_file(groups->doc, save_path);
+		g_free(save_path);
+	}
 }
 
 static gboolean popup_menu(GtkWidget *widget, FilerWindow *filer_window)
@@ -1572,7 +1692,7 @@ gint filer_key_press_event(GtkWidget	*widget,
 			   FilerWindow	*filer_window)
 {
 	ViewIface *view = filer_window->view;
-	GtkWidget *focus = GTK_WINDOW(widget)->focus_widget;
+	GtkWidget *focus = gtk_window_get_focus(GTK_WINDOW(widget));
 	guint key = event->keyval;
 	GdkModifierType modifiers = gtk_accelerator_get_default_mod_mask();
 	char group[2] = "1";
@@ -1586,15 +1706,32 @@ gint filer_key_press_event(GtkWidget	*widget,
 		g_signal_emit_by_name(widget, "keys_changed");
 	}
 
+	/* Per-window history navigation ([20260825105933]). Handled here,
+	 * before the event reaches the focused widget: the collection
+	 * consumes arrow keys, so a GtkAccelGroup would never fire. */
+	if ((event->state & modifiers) == GDK_MOD1_MASK)
+	{
+		if (key == GDK_KEY_Left || key == GDK_KEY_KP_Left)
+		{
+			filer_go_back(filer_window);
+			return TRUE;
+		}
+		if (key == GDK_KEY_Right || key == GDK_KEY_KP_Right)
+		{
+			filer_go_forward(filer_window);
+			return TRUE;
+		}
+	}
+
 	if (focus && focus == filer_window->minibuffer)
 		if (gtk_widget_event(focus, (GdkEvent *) event))
 			return TRUE;	/* Handled */
 
-	if (!focus)
+	if (!focus || focus == widget)
 		gtk_widget_grab_focus(GTK_WIDGET(view));
 
 	if (filer_window->mini_type &&
-		(key == GDK_Tab || key == GDK_ISO_Left_Tab))
+		(key == GDK_KEY_Tab || key == GDK_KEY_ISO_Left_Tab))
 	{
 		gtk_widget_grab_focus(filer_window->minibuffer);
 		return TRUE;
@@ -1602,37 +1739,37 @@ gint filer_key_press_event(GtkWidget	*widget,
 
 	if ((filer_window->right_link || filer_window->left_link) &&
 			(
-			key == GDK_Left  || key == GDK_KEY_KP_Left ||
-			key == GDK_Right || key == GDK_KEY_KP_Right ||
-			key == GDK_Up    || key == GDK_KEY_KP_Up ||
-			key == GDK_Down  || key == GDK_KEY_KP_Down)
+			key == GDK_KEY_Left  || key == GDK_KEY_KP_Left ||
+			key == GDK_KEY_Right || key == GDK_KEY_KP_Right ||
+			key == GDK_KEY_Up    || key == GDK_KEY_KP_Up ||
+			key == GDK_KEY_Down  || key == GDK_KEY_KP_Down)
 			)
 		link_cursor(filer_window);
 
 	switch (key)
 	{
-		case GDK_Escape:
+		case GDK_KEY_Escape:
 			if ((filer_window->right_link || filer_window->left_link))
 				filer_cut_links(filer_window, 0);
 			filer_target_mode(filer_window, NULL, NULL, NULL);
 			view_cursor_to_iter(view, NULL);
 			view_clear_selection(view);
 			return FALSE;
-		case GDK_Return:
+		case GDK_KEY_Return:
 		case GDK_KEY_KP_Enter:
 			return_pressed(filer_window, event);
 			break;
-		case GDK_ISO_Left_Tab:
+		case GDK_KEY_ISO_Left_Tab:
 			filer_next_selected(filer_window, -1);
 			break;
-		case GDK_Tab:
+		case GDK_KEY_Tab:
 			filer_next_selected(filer_window, 1);
 			break;
-		case GDK_BackSpace:
+		case GDK_KEY_BackSpace:
 			change_to_parent(filer_window);
 			break;
-		case GDK_bar:
-		case GDK_backslash:
+		case GDK_KEY_bar:
+		case GDK_KEY_backslash:
 		{
 			ViewIter iter;
 
@@ -1643,22 +1780,36 @@ gint filer_key_press_event(GtkWidget	*widget,
 					(GdkEvent *) event, &iter);
 			break;
 		}
+		case GDK_KEY_Menu:
+		case GDK_KEY_F10: /* [20260910091552] */
+		{
+			if (event->state & GDK_SHIFT_MASK)
+			{
+				ViewIter iter;
+
+				view_get_cursor(view, &iter);
+				show_filer_menu(filer_window,
+						(GdkEvent *) event, &iter);
+				return TRUE;
+			}
+			return FALSE;
+		}
 		case ' ':
 			filer_window_toggle_cursor_item_selected(filer_window);
 			break;
 		default:
-			if (key >= GDK_0 && key <= GDK_9)
-				group[0] = key - GDK_0 + '0';
-			else if (key >= GDK_KP_0 && key <= GDK_KP_9)
-				group[0] = key - GDK_KP_0 + '0';
+			if (key >= GDK_KEY_0 && key <= GDK_KEY_9)
+				group[0] = key - GDK_KEY_0 + '0';
+			else if (key >= GDK_KEY_KP_0 && key <= GDK_KEY_KP_9)
+				group[0] = key - GDK_KEY_KP_0 + '0';
 			else if (!(event->state & modifiers) &&
-						key >= GDK_a && key <= GDK_z)
+						key >= GDK_KEY_a && key <= GDK_KEY_z)
 			{
 				minibuffer_show(filer_window, MINI_REG_SELECT, key);
 				return TRUE;
 			}
 			else if ((event->state & modifiers) == GDK_SHIFT_MASK &&
-						key >= GDK_A && key <= GDK_Z)
+						key >= GDK_KEY_A && key <= GDK_KEY_Z)
 			{
 				minibuffer_show(filer_window, MINI_TEMP_FILTER, key);
 				return TRUE;
@@ -1675,10 +1826,30 @@ gint filer_key_press_event(GtkWidget	*widget,
 
 			if ((event->state & modifiers) == GDK_CONTROL_MASK)
 				group_save(filer_window, group);
-			else if (!(event->state & modifiers))
+			else if (o_group_digits_modifier.int_value &&
+					(event->state & modifiers) == GDK_MOD1_MASK)
+			{
 				group_restore(filer_window, group);
+			}
+			else if (!(event->state & modifiers))
+			{
+				/* [20260911061827] Opt-in: bare digits start a
+				 * progressive Reg Select (group[0] already holds
+				 * the ASCII digit, keypad normalised above) while
+				 * Alt+digit restores numbered groups.
+				 */
+				if (o_group_digits_modifier.int_value)
+				{
+					minibuffer_show(filer_window,
+							MINI_REG_SELECT, group[0]);
+					return TRUE;
+				}
+				group_restore(filer_window, group);
+			}
 			else
+			{
 				return FALSE;
+			}
 	}
 
 	return TRUE;
@@ -1732,6 +1903,8 @@ static void tidy_sympath(gchar *path)
 	}
 }
 
+#define MAX_HIST_STACK   50
+
 /* Make filer_window display path. When finished, highlight item 'from', or
  * the first item if from is NULL. If there is currently no cursor then
  * simply wink 'from' (if not NULL).
@@ -1764,12 +1937,40 @@ void filer_change_to(FilerWindow *fw,
 
 	from_dup = from && *from ? g_strdup(from) : NULL;
 
-	detach(fw);
-	g_free(fw->real_path);
-	g_free(fw->sym_path);
-	fw->real_path = real_path;
-	fw->sym_path = sym_path;
-	tidy_sympath(fw->sym_path);
+	{
+		gchar *prev = g_strdup(fw->sym_path);
+
+		detach(fw);
+		g_free(fw->real_path);
+		g_free(fw->sym_path);
+		fw->real_path = real_path;
+		fw->sym_path = sym_path;
+		tidy_sympath(fw->sym_path);
+
+		if (!navigating_history && strcmp(prev, sym_path) != 0)
+		{
+			GList *last;
+
+			/* A fresh navigation: the forward record is
+			 * discarded (browser convention). */
+			g_list_free_full(fw->fwd_stack, g_free);
+			fw->fwd_stack = NULL;
+
+			fw->back_stack = g_list_prepend(fw->back_stack,
+							prev);
+			prev = NULL;
+
+			while (g_list_length(fw->back_stack) > MAX_HIST_STACK)
+			{
+				last = g_list_last(fw->back_stack);
+				g_free(last->data);
+				fw->back_stack =
+					g_list_delete_link(fw->back_stack,
+								last);
+			}
+		}
+		g_free(prev);
+	}
 	if (fw->regexp)
 	{
 		regfree((regex_t *) fw->regexp);
@@ -1789,8 +1990,8 @@ void filer_change_to(FilerWindow *fw,
 	force_resize = check_settings(fw, FALSE);
 
 
-	if (fw->window->window)
-		gdk_window_set_role(fw->window->window,
+	if (gtk_widget_get_window(fw->window))
+		gdk_window_set_role(gtk_widget_get_window(fw->window),
 				    fw->sym_path);
 
 	attach(fw);
@@ -1811,7 +2012,7 @@ void filer_change_to(FilerWindow *fw,
 	if (from_dup)
 	{
 		if (have_cursor)
-			//show cursor is have to be after what set col size
+			/* show the cursor only after setting the column size */
 			view_show_cursor(fw->view);
 
 		display_set_autoselect(fw, from_dup);
@@ -1827,14 +2028,83 @@ void filer_change_to(FilerWindow *fw,
 			view_get_iter(fw->view, &start, 0);
 			if (start.next(&start))
 				view_cursor_to_iter(fw->view, &start);
-			view_show_cursor(fw->view);
 		}
 		if (event)
 			gdk_event_free(event);
+
+		/* Establish the keyboard selection cursor for the new directory
+		 * on any change (mouse or key), so the focus indicator is drawn.
+		 */
+		view_show_cursor(fw->view);
+	}
+	else
+	{
+		/* Mouse-driven change into a directory: the click cleared the
+		 * cursor, so establish it now to draw the focus indicator.
+		 */
+		view_show_cursor(fw->view);
 	}
 
 	if (fw->mini_type == MINI_PATH)
 		g_idle_add((GSourceFunc) minibuffer_show_cb, fw);
+}
+
+/* Navigate one step back in this window's own history [20260825105933]. The
+ * current directory moves onto the forward stack; filer_change_to runs with
+ * the history flag set so the capture hook leaves the stacks alone.
+ */
+static void filer_history_navigate(FilerWindow *fw, GList **from, GList **to)
+{
+	GList	*entry;
+	gchar	*target = NULL;
+
+	if (!*from)
+		return;
+
+	entry = *from;
+	target = entry->data;
+
+	*from = g_list_delete_link(*from, entry);
+
+	*to = g_list_prepend(*to, g_strdup(fw->sym_path));
+
+	/* Optimized truncation: traverse to the 50th element once */
+	GList *nth = g_list_nth(*to, MAX_HIST_STACK);
+	if (nth)
+	{
+		/* nth is the 51st item (0-indexed). Free all data in the tail. */
+		for (GList *l = nth; l != NULL; l = l->next) {
+			g_free(l->data);
+		}
+		/* Truncate the list at the 50th item */
+		nth->prev->next = NULL;
+		g_list_free(nth); /* Frees the remaining GList nodes */
+	}
+
+	fw->wink_after_select = TRUE;
+	navigating_history = TRUE;
+	filer_change_to(fw, target, NULL);
+	navigating_history = FALSE;
+
+	g_free(target);
+}
+
+void filer_go_back(FilerWindow *filer_window)
+{
+	g_return_if_fail(filer_window != NULL);
+
+	filer_history_navigate(filer_window,
+				&filer_window->back_stack,
+				&filer_window->fwd_stack);
+}
+
+void filer_go_forward(FilerWindow *filer_window)
+{
+	g_return_if_fail(filer_window != NULL);
+
+	filer_history_navigate(filer_window,
+				&filer_window->fwd_stack,
+				&filer_window->back_stack);
 }
 
 /* Returns a list containing the full (sym) pathname of every selected item.
@@ -1843,7 +2113,7 @@ void filer_change_to(FilerWindow *fw,
 GList *filer_selected_items(FilerWindow *filer_window)
 {
 	GQueue retq = G_QUEUE_INIT;
-	guchar	*dir = filer_window->sym_path;
+	gchar	*dir = filer_window->sym_path;
 	ViewIter iter;
 	DirItem *item;
 
@@ -1909,48 +2179,17 @@ FilerWindow *filer_opendir(const char *path, FilerWindow *src_win,
 		g_free(dir);
 	}
 
-	filer_window = g_new(FilerWindow, 1);
+	filer_window = g_new0(FilerWindow, 1);
 	filer_window->under_init = TRUE;
 	filer_window->first_scan = TRUE;
 	filer_window->new_win_first_scan = TRUE;
-	filer_window->onlyicon = FALSE;
-	filer_window->req_sort = FALSE;
-	filer_window->may_resize = FALSE;
-	filer_window->presented = FALSE;
-
-	filer_window->message = NULL;
-	filer_window->minibuffer = NULL;
-	filer_window->minibuffer_label = NULL;
-	filer_window->minibuffer_area = NULL;
-	filer_window->temp_show_hidden = FALSE;
 	filer_window->sym_path = g_strdup(path);
 	filer_window->real_path = real_path;
-	filer_window->scanning = FALSE;
-	filer_window->auto_select = NULL;
-	filer_window->toolbar_text = NULL;
-	filer_window->toolbar_size_text = NULL;
-	filer_window->toolbar_settings_text = NULL;
-	filer_window->target_cb = NULL;
 	filer_window->mini_type = MINI_NONE;
 	filer_window->selection_state = GTK_STATE_ACTIVE;
-	filer_window->toolbar = NULL;
-	filer_window->toplevel_vbox = NULL;
-	filer_window->view_hbox = NULL;
-	filer_window->view = NULL;
-	filer_window->scrollbar = NULL;
 	filer_window->auto_scroll = -1;
-	filer_window->window_id = NULL;
-	filer_window->dir_colour = NULL;
-	filer_window->configured = 0;
 	filer_window->last_width = -1;
 	filer_window->last_height = -1;
-	filer_window->dir_icon = NULL;
-	filer_window->right_link = NULL;
-	filer_window->left_link = NULL;
-	filer_window->right_link_idle = 0;
-	filer_window->accept_timeout = 0;
-	filer_window->pointer_idle = 0;
-	filer_window->resize_drag_width = 0;
 
 	tidy_sympath(filer_window->sym_path);
 
@@ -2098,6 +2337,8 @@ void filer_set_view_type(FilerWindow *filer_window, ViewType type)
 	g_signal_connect(view, "drag_end",
 			G_CALLBACK(drag_end), filer_window);
 	/* Dragging from us... */
+	g_signal_connect(view, "drag_begin",
+			G_CALLBACK(drag_begin), filer_window);
 	g_signal_connect(view, "drag_data_get",
 			G_CALLBACK(drag_data_get), NULL);
 
@@ -2116,6 +2357,13 @@ void filer_set_view_type(FilerWindow *filer_window, ViewType type)
 
 		if (o_filer_auto_resize.int_value != RESIZE_NEVER)
 			view_autosize(filer_window->view, FALSE);
+
+		/* Establish the keyboard selection cursor for the freshly
+		 * created view so the focus indicator is drawn. No-op for
+		 * the details view; only affects the icon view.
+		 */
+		if (view_count_items(filer_window->view) > 0)
+			view_show_cursor(filer_window->view);
 	}
 
 	if (selected)
@@ -2223,19 +2471,28 @@ static void filer_add_widgets(FilerWindow *filer_window, const gchar *wm_class)
 	gtk_widget_set_name(filer_window->window, "rox-filer");
 
 	if (wm_class)
+	{
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 		gtk_window_set_wmclass(GTK_WINDOW(filer_window->window),
 				       wm_class, PROJECT);
+#pragma GCC diagnostic pop
+	}
 
-	if (small_height == 0)
+	static gboolean small_sizes_from_font = FALSE;
+	if (!small_sizes_from_font)
 	{
+		small_sizes_from_font = TRUE;
 		small_height = set_font(filer_window->window);
 		small_width = (SMALL_WIDTH * small_height) / SMALL_HEIGHT;
 	}
 
 	GdkScreen *screen = gtk_widget_get_screen(filer_window->window);
-	GdkColormap *rgba = gdk_screen_get_rgba_colormap(screen);
-	if (rgba)
-		gtk_widget_set_colormap(filer_window->window, rgba);
+	GdkVisual *rgba = gdk_screen_get_rgba_visual(screen);
+	if (rgba) {
+		gtk_widget_set_visual(filer_window->window, rgba);
+		gtk_widget_set_app_paintable(filer_window->window, TRUE);
+	}
 
 	/* This property is cleared when the window is destroyed.
 	 * You can thus ref filer_window->window and use this to see
@@ -2245,9 +2502,9 @@ static void filer_add_widgets(FilerWindow *filer_window, const gchar *wm_class)
 			"filer_window", filer_window);
 
 	/* Create this now to make the Adjustment before the View */
-	filer_window->scrollbar = gtk_vscrollbar_new(NULL);
+	filer_window->scrollbar = gtk_scrollbar_new(GTK_ORIENTATION_VERTICAL, NULL);
 
-	vbox = gtk_vbox_new(FALSE, 0);
+	vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
 	gtk_container_add(GTK_CONTAINER(filer_window->window), vbox);
 
 	filer_window->toplevel_vbox = GTK_BOX(vbox);
@@ -2256,11 +2513,12 @@ static void filer_add_widgets(FilerWindow *filer_window, const gchar *wm_class)
 	 * 'Running as root'), add it here.
 	 */
 	filer_window->message = gtk_label_new(show_user_message);
+	gtk_widget_set_name(filer_window->message, "rox-filer-message");
 	gtk_box_pack_start(GTK_BOX(vbox), filer_window->message, FALSE, TRUE, 0);
 	if (show_user_message && !(o_hide_root_msg.int_value && euid == 0))
 		gtk_widget_show(filer_window->message);
 
-	hbox = gtk_hbox_new(FALSE, 0);
+	hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
 	filer_window->view_hbox = GTK_BOX(hbox);
 	gtk_box_pack_start(GTK_BOX(vbox), hbox, TRUE, TRUE, 0);
 	/* Add the main View widget */
@@ -2281,6 +2539,7 @@ static void filer_add_widgets(FilerWindow *filer_window, const gchar *wm_class)
 	/* And the thumbnail progress bar (also hidden) */
 	{
 		filer_window->thumb_bar = gtk_progress_bar_new();
+		gtk_widget_set_name(filer_window->thumb_bar, "rox-progress");
 		gtk_widget_set_size_request(filer_window->thumb_bar,
 				-1, small_height * (1./3.));
 
@@ -2292,7 +2551,9 @@ static void filer_add_widgets(FilerWindow *filer_window, const gchar *wm_class)
 	gtk_widget_show(filer_window->scrollbar);
 	gtk_widget_realize(filer_window->window);
 
-	gdk_window_set_role(filer_window->window->window,
+	toolbar_update_min_buttons(filer_window);
+
+	gdk_window_set_role(gtk_widget_get_window(filer_window->window),
 			    filer_window->sym_path);
 }
 
@@ -2307,9 +2568,9 @@ static gboolean configure_cb(
 	{
 		gint cw;
 		gdk_window_get_geometry(
-				fw->window->window, NULL, NULL,
+				gtk_widget_get_window(fw->window), NULL, NULL,
 				&cw,
-				NULL, NULL);
+				NULL);
 
 		if (fw->name_scale == 1.0) //just, toolbar doesn't know collection
 			fw->name_scale_itemw =
@@ -2351,9 +2612,9 @@ static gboolean focus_in_cb(GtkWidget *w, GdkEvent *e, FilerWindow *fw)
 
 	GdkRectangle lfrect, rfrect;
 	gdk_window_get_frame_extents(
-			fw->left_link->window->window, &lfrect);
+			gtk_widget_get_window(fw->left_link->window), &lfrect);
 	gdk_window_get_frame_extents(
-			fw->window->window, &rfrect);
+			gtk_widget_get_window(fw->window), &rfrect);
 	if (
 			rfrect.x + (fw_font_height / 2) < lfrect.x + lfrect.width ||
 			rfrect.x - (fw_font_height / 2) > lfrect.x + lfrect.width)
@@ -2644,7 +2905,7 @@ void filer_set_id(FilerWindow *filer_window, const char *id)
 void filer_set_title(FilerWindow *filer_window)
 {
 	gchar	*title = NULL;
-	guchar	*flags = "";
+	gchar	*flags = "";
 
 	if (filer_window->scanning ||
 	    filer_window->filter != FILER_SHOW_ALL ||
@@ -2779,7 +3040,7 @@ void filer_target_mode(FilerWindow *filer_window,
 
 	if (fn != old_fn)
 		gdk_window_set_cursor(
-				GTK_WIDGET(filer_window->view)->window,
+				gtk_widget_get_window(GTK_WIDGET(filer_window->view)),
 				fn ? crosshair : NULL);
 
 	filer_window->target_cb = fn;
@@ -2802,21 +3063,16 @@ void filer_target_mode(FilerWindow *filer_window,
 
 static void set_selection_state(FilerWindow *filer_window, gboolean normal)
 {
-	FilerWindow *fw = filer_window;
-
 	GtkStateType old_state = filer_window->selection_state;
 
 	filer_window->selection_state = normal
 			? GTK_STATE_SELECTED : GTK_STATE_ACTIVE;
 
-	if (filer_window->view_type == VIEW_TYPE_DETAILS)
-	{
-		GtkStyle *style = fw->window->style;
-		gtk_widget_modify_base(GTK_WIDGET(fw->view),
-				GTK_STATE_ACTIVE, &style->base[fw->selection_state]);
-		gtk_widget_modify_text(GTK_WIDGET(fw->view),
-				GTK_STATE_ACTIVE, &style->text[fw->selection_state]);
-	}
+	/* GtkTreeView handles focused vs unfocused selection rendering
+	 * natively via :selected:focus vs :selected CSS states.
+	 * We no longer override the NORMAL background of the entire
+	 * widget, which caused all rows to appear selected.
+	 */
 
 	if (old_state != filer_window->selection_state
 	    && view_count_selected(filer_window->view))
@@ -3096,7 +3352,7 @@ void filer_create_thumbs(FilerWindow *filer_window, GPtrArray *items)
 
 	while ((item = diritem_next(&iter, items, &index)))
 	{
-		const guchar *path;
+		const gchar *path;
 
 		 if (item->base_type != TYPE_FILE &&
 				(o_display_show_dir_thumbs.int_value != 1 ||
@@ -3165,7 +3421,7 @@ static void filer_options_changed(void)
 void filer_add_tip_details(FilerWindow *filer_window,
 			   GString *tip, DirItem *item)
 {
-	const guchar *fullpath = NULL;
+	const gchar *fullpath = NULL;
 
 	fullpath = make_path(filer_window->real_path, item->leafname);
 
@@ -3193,8 +3449,8 @@ void filer_add_tip_details(FilerWindow *filer_window,
 		info = appinfo_get(fullpath, item);
 		if (info && ((node = xml_get_section(info, NULL, "Summary"))))
 		{
-			guchar *str;
-			str = xmlNodeListGetString(node->doc,
+			gchar *str;
+			str = (gchar *) xmlNodeListGetString(node->doc,
 					node->xmlChildrenNode, 1);
 			if (str)
 			{
@@ -3227,13 +3483,13 @@ void filer_add_tip_details(FilerWindow *filer_window,
 /* Return the selection as a text/uri-list.
  * g_free() the result.
  */
-static guchar *filer_create_uri_list(FilerWindow *filer_window)
+static gchar *filer_create_uri_list(FilerWindow *filer_window)
 {
 	GString	*string;
 	GString	*leader;
 	ViewIter iter;
 	DirItem	*item;
-	guchar	*retval;
+	gchar	*retval;
 
 	g_return_val_if_fail(filer_window != NULL, NULL);
 
@@ -3314,8 +3570,8 @@ void filer_perform_action(FilerWindow *fw, GdkEventButton *event)
 		/* Make sure both parts of a double-click fall on
 		 * the same file.
 		 */
-		static guchar *first_click = NULL;
-		static guchar *second_click = NULL;
+		static gchar *first_click = NULL;
+		static gchar *second_click = NULL;
 
 		if (event->type == GDK_BUTTON_PRESS)
 		{
@@ -3519,7 +3775,7 @@ static gboolean tooltip_activate(GtkWidget *window)
 
 	tooltip_show(NULL);
 
-	gdk_window_get_pointer(motion_window, &x, &y, NULL);
+	gui_get_pointer(motion_window, &x, &y, NULL);
 	view_get_iter_at_point(view, &iter, motion_window, x, y);
 
 	item = iter.peek(&iter);
@@ -3583,7 +3839,7 @@ gint filer_motion_notify(FilerWindow *filer_window, GdkEventMotion *event)
 	{
 		if (motion_state != MOTION_READY_FOR_DND &&
 				!(event->state & (GDK_BUTTON1_MASK | GDK_BUTTON2_MASK)))
-			gdk_window_set_cursor(filer_window->window->window, hand_cursor);
+			gdk_window_set_cursor(gtk_widget_get_window(filer_window->window), hand_cursor);
 
 		if (item != tip_item)
 		{
@@ -3597,7 +3853,7 @@ gint filer_motion_notify(FilerWindow *filer_window, GdkEventMotion *event)
 	}
 	else
 	{
-		gdk_window_set_cursor(filer_window->window->window, NULL);
+		gdk_window_set_cursor(gtk_widget_get_window(filer_window->window), NULL);
 
 		tooltip_show(NULL);
 		tip_item = NULL;
@@ -3665,7 +3921,7 @@ gint filer_motion_notify(FilerWindow *filer_window, GdkEventMotion *event)
 	}
 	else
 	{
-		guchar *uris;
+		gchar *uris;
 
 		uris = filer_create_uri_list(filer_window);
 		drag_selection(GTK_WIDGET(view), event, uris);
@@ -3673,6 +3929,12 @@ gint filer_motion_notify(FilerWindow *filer_window, GdkEventMotion *event)
 	}
 
 	return FALSE;
+}
+
+static void drag_begin(GtkWidget *widget, GdkDragContext *context,
+		       FilerWindow *filer_window)
+{
+	gtk_widget_queue_draw(widget);
 }
 
 static void drag_end(GtkWidget *widget, GdkDragContext *context,
@@ -3685,6 +3947,8 @@ static void drag_end(GtkWidget *widget, GdkDragContext *context,
 		view_clear_selection(filer_window->view);
 		filer_window->temp_item_selected = FALSE;
 	}
+
+	gtk_widget_queue_draw(widget);
 }
 
 /* Remove highlights */
@@ -3709,16 +3973,16 @@ static gboolean drag_motion(GtkWidget		*widget,
 	DirItem		*item;
 	ViewIface	*view = filer_window->view;
 	ViewIter	iter;
-	GdkDragAction	action = context->suggested_action;
-	const guchar	*new_path = NULL;
+	GdkDragAction	action = gdk_drag_context_get_suggested_action(context);
+	const gchar	*new_path = NULL;
 	const char	*type = NULL;
 	gboolean	retval = FALSE;
 	gboolean	same_window;
 
-	if ((context->actions & GDK_ACTION_ASK) && o_dnd_left_menu.int_value)
+	if ((gdk_drag_context_get_actions(context) & GDK_ACTION_ASK) && o_dnd_left_menu.int_value)
 	{
 		guint state;
-		gdk_window_get_pointer(NULL, NULL, NULL, &state);
+		gui_get_pointer(NULL, NULL, NULL, &state);
 		if (state & GDK_BUTTON1_MASK)
 			action = GDK_ACTION_ASK;
 	}
@@ -3739,7 +4003,7 @@ static gboolean drag_motion(GtkWidget		*widget,
 
 	if (o_dnd_drag_to_icons.int_value)
 	{
-		view_get_iter_at_point(view, &iter, widget->window, x, y);
+		view_get_iter_at_point(view, &iter, gtk_widget_get_window(widget), x, y);
 		item = iter.peek(&iter);
 	}
 	else
@@ -3906,7 +4170,7 @@ void filer_refresh_thumbs(FilerWindow *filer_window)
 				 item->base_type != TYPE_DIRECTORY))
 			 continue;
 
-		guchar *path = g_strdup(
+		gchar *path = g_strdup(
 				make_path(filer_window->real_path, item->leafname));
 
 		g_fscache_remove(pixmap_cache, path);
@@ -4089,7 +4353,8 @@ gboolean filer_set_filter(FilerWindow *filer_window, FilterType type,
 		case FILER_SHOW_ALL:
 			return FALSE;
 		case FILER_SHOW_GLOB:
-			if (strcmp(filer_window->filter_string,
+			if (filter_string &&
+			    strcmp(filer_window->filter_string,
 				   filter_string) == 0)
 				return FALSE;
 			break;
@@ -4163,56 +4428,56 @@ static void store_settings(Settings *set)
 /* TODO: use symbolic names in the XML file where possible */
 static void load_from_node(Settings *set, xmlDocPtr doc, xmlNodePtr node)
 {
-	xmlChar *str=NULL;
+	gchar *str=NULL;
 
-	str=xmlNodeListGetString(doc, node->xmlChildrenNode, 1);
+	str = (gchar *) xmlNodeListGetString(doc, node->xmlChildrenNode, 1);
 
-	if(strcmp(node->name, "X") == 0) {
+	if(xmlStrcmp(node->name, BAD_CAST "X") == 0) {
 		set->x=atoi(str);
 		set->flags|=SET_POSITION;
-	} else if(strcmp(node->name, "Y") == 0) {
+	} else if(xmlStrcmp(node->name, BAD_CAST "Y") == 0) {
 		set->y=atoi(str);
 		set->flags|=SET_POSITION;
-	} else if(strcmp(node->name, "Width") == 0) {
+	} else if(xmlStrcmp(node->name, BAD_CAST "Width") == 0) {
 		set->width=atoi(str);
 		set->flags|=SET_SIZE;
-	} else if(strcmp(node->name, "Height") == 0) {
+	} else if(xmlStrcmp(node->name, BAD_CAST "Height") == 0) {
 		set->height=atoi(str);
 		set->flags|=SET_SIZE;
-	} else if(strcmp(node->name, "ShowHidden") == 0) {
+	} else if(xmlStrcmp(node->name, BAD_CAST "ShowHidden") == 0) {
 		set->show_hidden=atoi(str);
 		set->flags|=SET_HIDDEN;
-	} else if(strcmp(node->name, "ViewType") == 0) {
+	} else if(xmlStrcmp(node->name, BAD_CAST "ViewType") == 0) {
 		set->view_type=atoi(str);
 		set->flags|=SET_DETAILS;
-	} else if(strcmp(node->name, "DetailsType") == 0) {
+	} else if(xmlStrcmp(node->name, BAD_CAST "DetailsType") == 0) {
 		set->details_type=atoi(str);
 		set->flags|=SET_DETAILS;
-	} else if(strcmp(node->name, "SortType") == 0) {
+	} else if(xmlStrcmp(node->name, BAD_CAST "SortType") == 0) {
 		set->sort_type=atoi(str);
 		set->flags|=SET_SORT;
-	} else if(strcmp(node->name, "SortOrder") == 0) {
+	} else if(xmlStrcmp(node->name, BAD_CAST "SortOrder") == 0) {
 		set->sort_order=atoi(str);
 		set->flags|=SET_SORT;
-	} else if(strcmp(node->name, "DisplayStyle") == 0) {
+	} else if(xmlStrcmp(node->name, BAD_CAST "DisplayStyle") == 0) {
 		set->display_style=atoi(str);
 		set->flags|=SET_STYLE;
-	} else if(strcmp(node->name, "ShowThumbs") == 0) {
+	} else if(xmlStrcmp(node->name, BAD_CAST "ShowThumbs") == 0) {
 		set->show_thumbs=atoi(str);
 		set->flags|=SET_THUMBS;
-	} else if(strcmp(node->name, "FilterType") == 0) {
+	} else if(xmlStrcmp(node->name, BAD_CAST "FilterType") == 0) {
 		set->filter_type=atoi(str);
 		set->flags|=SET_FILTER;
-	} else if(strcmp(node->name, "Filter") == 0) {
+	} else if(xmlStrcmp(node->name, BAD_CAST "Filter") == 0) {
 		set->filter=g_strdup(str);
 		set->flags|=SET_FILTER;
-	} else if(strcmp(node->name, "FilterDirectories") == 0) {
+	} else if(xmlStrcmp(node->name, BAD_CAST "FilterDirectories") == 0) {
 		set->filter_directories=atoi(str);
 		set->flags|=SET_FILTER;
 	}
 
 	if(str)
-		xmlFree(str);
+		g_free(str);
 }
 
 static void load_learnt_mounts(void)
@@ -4226,7 +4491,7 @@ static void load_learnt_mounts(void)
 	unmount_prompt_actions = g_hash_table_new_full(g_str_hash,
 			g_str_equal, g_free, NULL);
 
-	path = choices_find_xdg_path_load("Mounts", PROJECT, SITE);
+	path = choices_find_xdg_path_load("Mounts", project_name, SITE);
 	if (!path)
 		return;
 	if (!g_file_get_contents(path, &buffer, &len, NULL))
@@ -4268,7 +4533,7 @@ static void save_mount(char *path, gpointer value, FILE **pfp)
 	if (!*pfp)
 	{
 		gchar *spath = choices_find_xdg_path_save("Mounts",
-				PROJECT, SITE, TRUE);
+				project_name, SITE, TRUE);
 
 		if (!spath)
 			return;
@@ -4298,7 +4563,7 @@ static void load_settings(void)
 	gchar *path;
 	XMLwrapper *settings_doc=NULL;
 
-	path=choices_find_xdg_path_load("Settings.xml", PROJECT, SITE);
+	path=choices_find_xdg_path_load("Settings.xml", project_name, SITE);
 	if(path) {
 		settings_doc=xml_new(path);
 		g_free(path);
@@ -4319,11 +4584,11 @@ static void load_settings(void)
 
 			if (node->type != XML_ELEMENT_NODE)
 				continue;
-			if (strcmp(node->name, "FilerWindow") != 0)
+			if (xmlStrcmp(node->name, BAD_CAST "FilerWindow") != 0)
 				continue;
 
-			path=xmlGetProp(node, "path");
-			set=settings_new(path);
+			path=xmlGetProp(node, BAD_CAST "path");
+			set=settings_new((const char *) path);
 			xmlFree(path);
 
 			for (subnode=node->xmlChildrenNode; subnode;
@@ -4348,65 +4613,66 @@ static void add_nodes(gpointer key, gpointer value, gpointer data)
 	Settings *set=(Settings *) value;
 	char *tmp;
 
-	sub=xmlNewChild(node, NULL, "FilerWindow", NULL);
+	sub=xmlNewChild(node, NULL, BAD_CAST "FilerWindow", NULL);
 
-	xmlSetProp(sub, "path", set->path);
+	xmlSetProp(sub, BAD_CAST "path", (const xmlChar *) set->path);
 
 	if(set->flags & SET_POSITION) {
 		tmp=g_strdup_printf("%d", set->x);
-		xmlNewChild(sub, NULL, "X", tmp);
+		xmlNewChild(sub, NULL, BAD_CAST "X", (const xmlChar *) tmp);
 		g_free(tmp);
 		tmp=g_strdup_printf("%d", set->y);
-		xmlNewChild(sub, NULL, "Y", tmp);
+		xmlNewChild(sub, NULL, BAD_CAST "Y", (const xmlChar *) tmp);
 		g_free(tmp);
 	}
 	if(set->flags & SET_SIZE) {
 		tmp=g_strdup_printf("%d", set->width);
-		xmlNewChild(sub, NULL, "Width", tmp);
+		xmlNewChild(sub, NULL, BAD_CAST "Width", (const xmlChar *) tmp);
 		g_free(tmp);
 		tmp=g_strdup_printf("%d", set->height);
-		xmlNewChild(sub, NULL, "Height", tmp);
+		xmlNewChild(sub, NULL, BAD_CAST "Height", (const xmlChar *) tmp);
 		g_free(tmp);
 	}
 	if(set->flags & SET_HIDDEN) {
 		tmp=g_strdup_printf("%d", set->show_hidden);
-		xmlNewChild(sub, NULL, "ShowHidden", tmp);
+		xmlNewChild(sub, NULL, BAD_CAST "ShowHidden", (const xmlChar *) tmp);
 		g_free(tmp);
 	}
 	if(set->flags & SET_STYLE) {
 		tmp=g_strdup_printf("%d", set->display_style);
-		xmlNewChild(sub, NULL, "DisplayStyle", tmp);
+		xmlNewChild(sub, NULL, BAD_CAST "DisplayStyle", (const xmlChar *) tmp);
 		g_free(tmp);
 	}
 	if(set->flags & SET_SORT) {
 		tmp=g_strdup_printf("%d", set->sort_type);
-		xmlNewChild(sub, NULL, "SortType", tmp);
+		xmlNewChild(sub, NULL, BAD_CAST "SortType", (const xmlChar *) tmp);
 		g_free(tmp);
 		tmp=g_strdup_printf("%d", set->sort_order);
-		xmlNewChild(sub, NULL, "SortOrder", tmp);
+		xmlNewChild(sub, NULL, BAD_CAST "SortOrder", (const xmlChar *) tmp);
 		g_free(tmp);
 	}
 	if(set->flags & SET_DETAILS) {
 		tmp=g_strdup_printf("%d", set->view_type);
-		xmlNewChild(sub, NULL, "ViewType", tmp);
+		xmlNewChild(sub, NULL, BAD_CAST "ViewType", (const xmlChar *) tmp);
 		g_free(tmp);
 		tmp=g_strdup_printf("%d", set->details_type);
-		xmlNewChild(sub, NULL, "DetailsType", tmp);
+		xmlNewChild(sub, NULL, BAD_CAST "DetailsType", (const xmlChar *) tmp);
 		g_free(tmp);
 	}
 	if(set->flags & SET_THUMBS) {
 		tmp=g_strdup_printf("%d", set->show_thumbs);
-		xmlNewChild(sub, NULL, "ShowThumbs", tmp);
+		xmlNewChild(sub, NULL, BAD_CAST "ShowThumbs", (const xmlChar *) tmp);
 		g_free(tmp);
 	}
 	if(set->flags & SET_FILTER) {
 		tmp=g_strdup_printf("%d", set->filter_type);
-		xmlNewChild(sub, NULL, "FilterType", tmp);
+		xmlNewChild(sub, NULL, BAD_CAST "FilterType", (const xmlChar *) tmp);
 		g_free(tmp);
 		if(set->filter && set->filter[0])
-			xmlNewChild(sub, NULL, "Filter", set->filter);
+			xmlNewChild(sub, NULL, BAD_CAST "Filter",
+				    (const xmlChar *) set->filter);
 		tmp=g_strdup_printf("%d", set->filter_directories);
-		xmlNewChild(sub, NULL, "FilterDirectories", tmp);
+		xmlNewChild(sub, NULL, BAD_CAST "FilterDirectories", (const xmlChar *) tmp);
 	}
 }
 
@@ -4414,11 +4680,11 @@ static void save_settings(void)
 {
 	gchar *path;
 
-	path=choices_find_xdg_path_save("Settings.xml", PROJECT, SITE, TRUE);
+	path=choices_find_xdg_path_save("Settings.xml", project_name, SITE, TRUE);
 	if(path) {
-		xmlDocPtr doc = xmlNewDoc("1.0");
+		xmlDocPtr doc = xmlNewDoc(BAD_CAST "1.0");
 		xmlDocSetRootElement(doc, xmlNewDocNode(doc, NULL,
-							"Settings", NULL));
+							BAD_CAST "Settings", NULL));
 
 		g_hash_table_foreach(settings_table, add_nodes,
 					    xmlDocGetRootElement(doc));
@@ -4713,15 +4979,18 @@ void filer_save_settings(FilerWindow *fwin, gboolean parent)
 	gtk_window_set_position(GTK_WINDOW(set_win->window),
 			GTK_WIN_POS_MOUSE);
 
-	gtk_dialog_add_button(GTK_DIALOG(set_win->window),
-			GTK_STOCK_CANCEL, GTK_RESPONSE_CANCEL);
+	gtk_dialog_add_action_widget(GTK_DIALOG(set_win->window),
+			button_new_mixed("gtk-cancel", _("_Cancel")),
+			GTK_RESPONSE_CANCEL);
 
 	if (bs)
-		gtk_dialog_add_button(GTK_DIALOG(set_win->window),
-				GTK_STOCK_DELETE, GTK_RESPONSE_NO);
+		gtk_dialog_add_action_widget(GTK_DIALOG(set_win->window),
+				button_new_mixed("edit-delete", _("_Delete")),
+				GTK_RESPONSE_NO);
 
-	gtk_dialog_add_button(GTK_DIALOG(set_win->window),
-			GTK_STOCK_OK, GTK_RESPONSE_OK);
+	gtk_dialog_add_action_widget(GTK_DIALOG(set_win->window),
+			button_new_mixed("gtk-ok", _("_OK")),
+			GTK_RESPONSE_OK);
 
 	g_signal_connect(set_win->window, "destroy",
 			 G_CALLBACK(one_less_window), NULL);
@@ -4731,7 +5000,7 @@ void filer_save_settings(FilerWindow *fwin, gboolean parent)
 	gtk_window_set_title(GTK_WINDOW(set_win->window),
 			     _("Select display properties to save"));
 
-	vbox=GTK_DIALOG(set_win->window)->vbox;
+	vbox=gtk_dialog_get_content_area(GTK_DIALOG(set_win->window));
 
 	lbl=gtk_label_new(parent ?
 			_("<b>Save display settings for parent directory/*</b>") :
@@ -4746,7 +5015,7 @@ void filer_save_settings(FilerWindow *fwin, gboolean parent)
 	gtk_box_pack_start(GTK_BOX(vbox), frame, TRUE, TRUE, 2);
 
 	/*Make new vbox to go in the frame */
-	vbox=gtk_vbox_new(FALSE, 2);
+	vbox=gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
 	gtk_container_add(GTK_CONTAINER(frame), vbox);
 
 	set_win->pos=gtk_check_button_new_with_label(_("Position"));

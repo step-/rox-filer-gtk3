@@ -1,6 +1,7 @@
 /*
  * ROX-Filer, filer for the ROX desktop project
  * Copyright (C) 2006, Thomas Leonard and others (see changelog for details).
+ * Copyright (C) 2026, step <step.commons@gmail.com>.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the Free
@@ -38,11 +39,13 @@ static gchar **xdg_dir_list = NULL;
 static int     xdg_dir_count= 0 ;
 
 static struct migration {
-	const char *dir;
+	char *dir;
 	const char *site;
 	int symlink;
 } to_migrate[]={
-	{"ROX-Filer", SITE, TRUE},
+	/* dir set to project_name in choices_init() */
+	{(char[256]){0}, SITE, TRUE},
+
 	{"SendTo", SITE, TRUE},
 	{"Templates", SITE, TRUE},
 	{"MIME-types", SITE, TRUE},
@@ -74,6 +77,11 @@ void choices_init(void)
 	int i, n;
 
 	g_return_if_fail(dir_list == NULL);
+
+	/* Use project_name (set from env/CLI in main.c) for the ROX-Filer
+	 * migration and config directory, allowing GTK2/GTK3 isolation.
+	 */
+	g_strlcpy(to_migrate[0].dir, project_name, 256);
 
 	/* Initialize old system */
 	choices = getenv("CHOICESPATH");
@@ -153,7 +161,7 @@ void choices_migrate(void)
 	gchar *newpath;
 
 	/* Attempt migration */
-	newpath=choices_find_xdg_path_save(".", PROJECT, SITE, FALSE);
+	newpath=choices_find_xdg_path_save(".", project_name, SITE, FALSE);
 	if(!exists(newpath) && !saving_disabled)
 		migrate_choices();
 	g_free(newpath);
@@ -342,7 +350,7 @@ GPtrArray *choices_list_xdg_dirs(char *dir, char *site)
 
 	for (i=0; i<xdg_dir_count; i++)
 	{
-		guchar	*path;
+		gchar	*path;
 
 		if(site)
 			path = g_build_filename(xdg_dir_list[i], site,
@@ -383,11 +391,11 @@ static void migrate_choices(void)
 	gchar *src, *dest;
 	gboolean migrated_something = FALSE;
 
-	npath=choices_find_xdg_path_save("...", PROJECT, SITE, FALSE);
-	opath=choices_find_path_save("...", PROJECT,FALSE);
+	npath=choices_find_xdg_path_save("...", project_name, SITE, FALSE);
+	opath=choices_find_path_save("...", project_name, FALSE);
 
 	/*
-	dest=choices_find_xdg_path_save(".", PROJECT, SITE, TRUE);
+	dest=choices_find_xdg_path_save(".", project_name, SITE, TRUE);
 	g_free(dest);
 	*/
 

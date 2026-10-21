@@ -1,6 +1,7 @@
 /*
  * ROX-Filer, filer for the ROX desktop project
  * Copyright (C) 2006, Thomas Leonard and others (see changelog for details).
+ * Copyright (C) 2026, step <step.commons@gmail.com>.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the Free
@@ -86,7 +87,7 @@ void diritem_init(void)
  * 'parent' is optional; it saves one stat() for directories.
  */
 void diritem_restat(
-		const guchar *path,
+		const gchar *path,
 		DirItem *retitem,
 		struct stat *parent,
 		gboolean examine_now)
@@ -116,7 +117,7 @@ void diritem_restat(
 	}
 	else
 	{
-		guchar *target_path;
+		gchar *target_path;
 
 		item->lstat_errno = 0;
 		item->size = info.st_size;
@@ -157,7 +158,7 @@ void diritem_restat(
 		else
 		{
 			item->base_type = mode_to_base_type(info.st_mode);
-			target_path = (guchar *) path;
+			target_path = (gchar *) path;
 		}
 
 		if (item->base_type == TYPE_DIRECTORY)
@@ -204,7 +205,7 @@ void diritem_restat(
 	{
 		if (item->flags & ITEM_FLAG_SYMLINK)
 		{
-			guchar *link_path;
+			gchar *link_path;
 			link_path = pathdup(path);
 			item->mime_type = type_from_path(link_path
 					? link_path
@@ -267,7 +268,7 @@ void diritem_restat(
 		diritem_examine_dir(path, retitem);
 }
 
-DirItem *diritem_new(const guchar *leafname)
+DirItem *diritem_new(const gchar *leafname)
 {
 	DirItem		*item;
 
@@ -334,9 +335,9 @@ MaskedPixmap *_diritem_get_image(DirItem *item, gboolean mainthread)
  * - Looks for an image (but maybe still NULL on error)
  * - Updates ITEM_FLAG_APPDIR
  */
-gboolean diritem_examine_dir(const guchar *path, DirItem *item)
+gboolean diritem_examine_dir(const gchar *path, DirItem *item)
 {
-	guchar *rpath = pathdup(path); //realpath
+	gchar *rpath = pathdup(path); //realpath
 
 	int oldsize = item->size;
 	DIR *d = mc_opendir(rpath);

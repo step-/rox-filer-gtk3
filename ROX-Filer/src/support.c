@@ -1,6 +1,7 @@
 /*
  * ROX-Filer, filer for the ROX desktop project
  * Copyright (C) 2006, Thomas Leonard and others (see changelog for details).
+ * Copyright (C) 2026, step <step.commons@gmail.com>.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the Free
@@ -102,15 +103,15 @@ xmlDocPtr soap_new(xmlNodePtr *ret_body)
 	xmlNodePtr root;
 	xmlNs	   *env_ns;
 
-	doc = xmlNewDoc("1.0");
-	root = xmlNewDocNode(doc, NULL, "Envelope", NULL);
+	doc = xmlNewDoc(BAD_CAST "1.0");
+	root = xmlNewDocNode(doc, NULL, BAD_CAST "Envelope", NULL);
 	xmlDocSetRootElement(doc, root);
 
-	env_ns = xmlNewNs(root, SOAP_ENV_NS, "env");
+	env_ns = xmlNewNs(root, SOAP_ENV_NS, BAD_CAST "env");
 	xmlSetNs(root, env_ns);
 
-	*ret_body = xmlNewTextChild(root, env_ns, "Body", NULL);
-	xmlNewNs(*ret_body, ROX_NS, "rox");
+	*ret_body = xmlNewTextChild(root, env_ns, BAD_CAST "Body", NULL);
+	xmlNewNs(*ret_body, ROX_NS, BAD_CAST "rox");
 
 	return doc;
 }
@@ -133,7 +134,7 @@ char *pathdup(const char *path)
  * until the next call to make_path.
  * The return value may be used as 'dir' for the next call.
  */
-const guchar *make_path(const char *dir, const char *leaf)
+const gchar *make_path(const char *dir, const char *leaf)
 {
 	static GString *buffer = NULL;
 
@@ -618,10 +619,10 @@ char *pretty_time(const time_t *time)
  * into a shell command.
  * Eg: 'My Dir?' becomes 'My\ Dir\?'. g_free() the result.
  */
-guchar *shell_escape(const guchar *word)
+gchar *shell_escape(const gchar *word)
 {
 	GString	*tmp;
-	guchar	*retval;
+	gchar	*retval;
 
 	tmp = g_string_new(NULL);
 
@@ -697,7 +698,7 @@ gboolean is_sub_dir(const char *sub_obj, const char *parent)
 /* True if the string 'list' contains 'item'.
  * Eg ("close", "close, help") -> TRUE
  */
-gboolean in_list(const guchar *item, const guchar *list)
+gboolean in_list(const gchar *item, const gchar *list)
 {
 	int	len;
 
@@ -726,10 +727,10 @@ gboolean in_list(const guchar *item, const guchar *list)
  *
  * The array and the strings in it must be freed after use.
  */
-GPtrArray *split_path(const guchar *path)
+GPtrArray *split_path(const gchar *path)
 {
 	GPtrArray *array;
-	guchar	*slash;
+	gchar	*slash;
 
 	g_return_val_if_fail(path != NULL, NULL);
 
@@ -759,10 +760,10 @@ GPtrArray *split_path(const guchar *path)
 /* Return the shortest path from 'from' to 'to'.
  * Eg: get_relative_path("/a/b/c", "a/d/e") -> "../d/e"
  */
-guchar *get_relative_path(const guchar *from, const guchar *to)
+gchar *get_relative_path(const gchar *from, const gchar *to)
 {
 	GString  *path;
-	guchar	 *retval;
+	gchar	 *retval;
 	GPtrArray *src, *dst;
 	int	i, j;
 
@@ -779,8 +780,8 @@ guchar *get_relative_path(const guchar *from, const guchar *to)
 	i = 0;
 	while (i < src->len && i < dst->len)
 	{
-		guchar	*a = (guchar *) src->pdata[i];
-		guchar	*b = (guchar *) dst->pdata[i];
+		gchar	*a = (gchar *) src->pdata[i];
+		gchar	*b = (gchar *) dst->pdata[i];
 
 		if (strcmp(a, b) != 0)
 			break;
@@ -795,7 +796,7 @@ guchar *get_relative_path(const guchar *from, const guchar *to)
 	/* Go down one dir for each element remaining in dst */
 	for (j = i; j < dst->len; j++)
 	{
-		g_string_append(path, (guchar *) dst->pdata[j]);
+		g_string_append(path, (gchar *) dst->pdata[j]);
 		g_string_append_c(path, '/');
 	}
 
@@ -1096,7 +1097,7 @@ char *md5_hash(const char *message)
 	MD5Context ctx;
 
 	MD5Init(&ctx);
-	MD5Update(&ctx, message, strlen(message));
+	MD5Update(&ctx, (const unsigned char *) message, strlen(message));
 	return MD5Final(&ctx);
 }
 
@@ -1130,12 +1131,12 @@ void ensure_utf8(gchar **sp)
 	}
 }
 
-/* Removes trailing / chars and converts a leading '~/' (if any) to
+/* Removes trailing / chars and converts '~' or a leading '~/' (if any) to
  * the user's home dir. g_free() the result.
  */
 gchar *expand_path(const gchar *path)
 {
-	guchar		*retval;
+	gchar		*retval;
 	int		path_len;
 
 	g_return_val_if_fail(path != NULL, NULL);
@@ -1148,7 +1149,7 @@ gchar *expand_path(const gchar *path)
 
 	if (path[0] == '~' && (path[1] == '\0' || path[1] == '/'))
 	{
-		guchar *tmp = retval;
+		gchar *tmp = retval;
 
 		retval = g_strconcat(home_dir, retval + 1, NULL);
 		g_free(tmp);
@@ -1162,14 +1163,14 @@ gchar *expand_path(const gchar *path)
  */
 gchar *collapse_path(const gchar *path)
 {
-	guchar *retval = NULL;
+	gchar *retval = NULL;
 
 	g_return_val_if_fail(path != NULL, NULL);
 
 	if (home_dir_len > 1 &&
 		strncmp(path, home_dir, home_dir_len) == 0)
 	{
-		guchar sep = path[home_dir_len];
+		gchar sep = path[home_dir_len];
 
 		if (sep == '\0' || sep == '/')
 			retval = g_strconcat("~",
@@ -1218,7 +1219,7 @@ EscapedPath *escape_uri_path(const char *path)
 
 	str = g_string_sized_new(strlen(path));
 
-	for (s = path; *s; s++)
+	for (s = (const guchar *) path; *s; s++)
 	{
 		if (!g_ascii_isalnum(*s) && !strchr(safe, *s))
 			g_string_append_printf(str, "%%%02x", *s);
@@ -1232,7 +1233,7 @@ EscapedPath *escape_uri_path(const char *path)
 	return (EscapedPath *) ans;
 }
 
-EscapedPath *encode_path_as_uri(const guchar *path)
+EscapedPath *encode_path_as_uri(const gchar *path)
 {
 	gchar *tpath = (gchar *) escape_uri_path(path);
 	gchar *uri;
@@ -1288,7 +1289,7 @@ gint strcmp2(gconstpointer a, gconstpointer b)
  * '.' and '..' are skipped.
  * On error, the error is reported with g_warning and NULL is returned.
  */
-GPtrArray *list_dir_all(const guchar *path)
+GPtrArray *list_dir_all(const gchar *path)
 {
 	GDir *dir;
 	GError *error = NULL;
@@ -1319,7 +1320,7 @@ GPtrArray *list_dir_all(const guchar *path)
 	return names;
 }
 
-GPtrArray *list_dir(const guchar *path)
+GPtrArray *list_dir(const gchar *path)
 {
 	GDir *dir;
 	GError *error = NULL;

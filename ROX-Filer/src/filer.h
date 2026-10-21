@@ -71,6 +71,7 @@ struct _FilerWindow
 	Directory	*directory;
 
 	char		*auto_select;	/* If it we find while scanning */
+	gboolean	wink_after_select;	/* Wink the autoselected item (-s) */
 
 	GtkWidget	*message;	/* The 'Running as ...' message */
 
@@ -97,6 +98,9 @@ struct _FilerWindow
 	GtkWidget	*scrollbar;
 	GtkLabel	*toolbar_size_text;
 	GtkLabel	*toolbar_settings_text;
+
+	GList		*back_stack;	/* window nav history [20260825105933] */
+	GList		*fwd_stack;
 
 	GtkStateType	selection_state;	/* for drawing selection */
 
@@ -126,7 +130,7 @@ struct _FilerWindow
 	gint		req_height;
 
 	gfloat		icon_scale; /* temporary scale */
-	GdkColor	*dir_colour;
+	GdkRGBA		*dir_colour;
 	MaskedPixmap *dir_icon;
 
 	gboolean	under_init;
@@ -185,6 +189,8 @@ gboolean filer_exists(FilerWindow *filer_window);
 FilerWindow *filer_get_by_id(const char *id);
 void filer_set_id(FilerWindow *, const char *id);
 void filer_open_parent(FilerWindow *filer_window);
+void filer_go_back(FilerWindow *filer_window);
+void filer_go_forward(FilerWindow *filer_window);
 void filer_detach_rescan(FilerWindow *filer_window);
 void filer_target_mode(FilerWindow	*filer_window,
 			TargetFunc	fn,
@@ -192,6 +198,9 @@ void filer_target_mode(FilerWindow	*filer_window,
 			const char	*reason);
 GList *filer_selected_items(FilerWindow *filer_window);
 void filer_create_thumb(FilerWindow *filer_window, const gchar *pathname);
+void group_restore(FilerWindow *filer_window, char *name);
+gboolean group_get_info(const char *name, char **dir, int *n_items);
+void group_clear(const char *name);
 void filer_cancel_thumbnails(FilerWindow *filer_window);
 void filer_set_title(FilerWindow *filer_window);
 void filer_create_thumbs(FilerWindow *filer_window, GPtrArray *items);

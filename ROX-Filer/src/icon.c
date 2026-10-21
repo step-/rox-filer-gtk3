@@ -1,6 +1,7 @@
 /*
  * ROX-Filer, filer for the ROX desktop project
  * Copyright (C) 2006, Thomas Leonard and others (see changelog for details).
+ * Copyright (C) 2026, step <step.commons@gmail.com>.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the Free
@@ -61,7 +62,7 @@ GtkWidget *icon_menu = NULL; /* The popup icon menu */
 
 static GtkWidget	*icon_file_menu;	/* The file submenu */
 static GtkWidget	*icon_file_item;	/* 'File' label */
-static GtkWidget	*file_shift_item;	/* 'Shift Open' label */
+static GtkWidget	*file_shift_item;	/* 'Shift Open' item */
 
 /* A list of selected Icons. Every icon in the list is from the same group
  * (eg, you can't have icons from two different panels selected at the
@@ -257,7 +258,6 @@ void icon_prepare_menu(Icon *icon, GtkWidget *options_item, ...)
 		create_menu();
 
 	current_options_item = options_item;
-	add_stock_to_menu_item(options_item, GTK_STOCK_PREFERENCES);
 
 	gtk_menu_shell_append(GTK_MENU_SHELL(icon_menu), options_item);
 	gtk_widget_show_all(options_item);
@@ -288,7 +288,7 @@ void icon_prepare_menu(Icon *icon, GtkWidget *options_item, ...)
 	/* Shade the File/Edit/Show items unless an item was clicked */
 	if (icon)
 	{
-		guchar *tmp;
+		gchar *tmp;
 
 		menu_set_items_shaded(icon_menu, FALSE, 1, 3);
 		menu_set_items_shaded(icon_file_menu, FALSE, 0, 5);
@@ -369,7 +369,7 @@ void icon_destroy(Icon *icon)
 gchar *icon_create_uri_list(void)
 {
 	GString	*tmp;
-	guchar	*retval;
+	gchar	*retval;
 	GList	*next;
 
 	tmp = g_string_new(NULL);
@@ -546,7 +546,7 @@ static void rename_activate(GtkWidget *dialog)
 {
 	GtkWidget *entry, *src, *shortcut, *arg, *lock_state;
 	Icon *icon;
-	const guchar *new_name, *new_src, *new_shortcut, *new_args;
+	const gchar *new_name, *new_src, *new_shortcut, *new_args;
 	gboolean new_lock_state;
 
 	entry = g_object_get_data(G_OBJECT(dialog), "new_name");
@@ -745,7 +745,7 @@ static GdkFilterReturn filter_get_key(GdkXEvent *xevent,
 		g_object_set_data(G_OBJECT(popup), "chosen-key", str);
 	}
 
-	gdk_window_remove_filter(popup->window, filter_get_key, data);
+	gdk_window_remove_filter(gtk_widget_get_window(popup), filter_get_key, data);
 	gtk_widget_destroy(popup);
 
 	return GDK_FILTER_REMOVE;
@@ -768,7 +768,7 @@ static void get_shortcut(GtkWidget *button, GtkWidget *label)
 {
 	GtkWidget *popup, *frame, *msg;
 	Window    xid;
-	Display	  *dpy = GDK_DISPLAY();
+	Display	  *dpy = GDK_DISPLAY_XDISPLAY(gdk_display_get_default());
 
 	popup = gtk_window_new(GTK_WINDOW_POPUP);
 
@@ -780,7 +780,10 @@ static void get_shortcut(GtkWidget *button, GtkWidget *label)
 
 	msg = gtk_label_new(_("Press the desired shortcut (eg, Control+F1)"));
 
-	gtk_misc_set_padding(GTK_MISC(msg), 20, 20);
+	gtk_widget_set_margin_start(msg, 20);
+	gtk_widget_set_margin_end(msg, 20);
+	gtk_widget_set_margin_top(msg, 20);
+	gtk_widget_set_margin_bottom(msg, 20);
 	gtk_container_add(GTK_CONTAINER(frame), msg);
 
 	gtk_window_set_modal(GTK_WINDOW(popup), TRUE);
@@ -793,9 +796,9 @@ static void get_shortcut(GtkWidget *button, GtkWidget *label)
 
 	gtk_widget_show_all(popup);
 
-	gdk_window_add_filter(popup->window, filter_get_key, popup);
+	gdk_window_add_filter(gtk_widget_get_window(popup), filter_get_key, popup);
 
-	xid = gdk_x11_drawable_get_xid(popup->window);
+	xid = GDK_WINDOW_XID(gtk_widget_get_window(popup));
 
 	if (XGrabKeyboard(dpy, xid, False, GrabModeAsync, GrabModeAsync,
 			gtk_get_current_event_time()) != Success)
@@ -842,8 +845,8 @@ static void show_rename_box(Icon *icon)
 
 	dialog = GTK_DIALOG(icon->dialog);
 
-	vbox = GTK_BOX(gtk_vbox_new(FALSE, 1));
-	gtk_box_pack_start(GTK_BOX(dialog->vbox), (GtkWidget *) vbox,
+	vbox = GTK_BOX(gtk_box_new(GTK_ORIENTATION_VERTICAL, 1));
+	gtk_box_pack_start(GTK_BOX(gtk_dialog_get_content_area(dialog)), (GtkWidget *) vbox,
 			   TRUE, TRUE, 0);
 	gtk_container_set_border_width(GTK_CONTAINER(vbox), 5);
 
@@ -890,22 +893,22 @@ static void show_rename_box(Icon *icon)
 	label = gtk_label_new(_("The keyboard shortcut is:"));
 	gtk_box_pack_start(vbox, label, TRUE, TRUE, 0);
 
-	hbox = gtk_hbox_new(FALSE, 2);
+	hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 2);
 	gtk_box_pack_start(vbox, hbox, TRUE, FALSE, 0);
 	button = gtk_button_new_with_label(icon->shortcut
 						? icon->shortcut
 						: CLICK_TO_SET);
 	gtk_box_pack_start(GTK_BOX(hbox), button, TRUE, TRUE, 0);
 	g_object_set_data(G_OBJECT(dialog), "new_shortcut",
-				GTK_BIN(button)->child);
+				gtk_bin_get_child(GTK_BIN(button)));
 	g_signal_connect(button, "clicked",
 			G_CALLBACK(get_shortcut),
-			GTK_BIN(button)->child);
-	button2 = gtk_button_new_from_stock(GTK_STOCK_CLEAR);
+			gtk_bin_get_child(GTK_BIN(button)));
+	button2 = button_new_mixed("edit-clear", _("_Clear"));
 	gtk_box_pack_start(GTK_BOX(hbox), button2, FALSE, FALSE, 0);
 	g_signal_connect(button2, "clicked",
 			G_CALLBACK(clear_shortcut),
-			GTK_BIN(button)->child);
+			gtk_bin_get_child(GTK_BIN(button)));
 
 	lock_state = gtk_check_button_new_with_label(_("Locked"));
 	gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(lock_state), icon->locked);
@@ -916,14 +919,20 @@ static void show_rename_box(Icon *icon)
 
 	g_object_set_data(G_OBJECT(dialog), "callback_icon", icon);
 
-	gtk_dialog_add_buttons(dialog,
-			GTK_STOCK_CANCEL, GTK_RESPONSE_CANCEL,
-			GTK_STOCK_OK, GTK_RESPONSE_OK,
-			NULL);
+	gtk_dialog_add_action_widget(dialog,
+			button_new_mixed("gtk-cancel", _("_Cancel")),
+			GTK_RESPONSE_CANCEL);
+	button = button_new_mixed("gtk-ok", _("_OK"));
+	gtk_widget_set_can_default(button, TRUE);
+	gtk_dialog_add_action_widget(dialog, button, GTK_RESPONSE_OK);
 	gtk_dialog_set_default_response(dialog, GTK_RESPONSE_OK);
 
 	g_signal_connect(dialog, "response", G_CALLBACK(edit_response), NULL);
 
+	rox_dialog_set_parent_full(GTK_WIDGET(dialog), FALSE);
+	number_of_windows++;
+	g_signal_connect(dialog, "destroy",
+			G_CALLBACK(one_less_window), NULL);
 	gtk_widget_show_all(GTK_WIDGET(dialog));
 }
 
@@ -1058,7 +1067,7 @@ static void icon_set_selected_int(Icon *icon, gboolean selected)
 static void initModifiers(void)
 {
 	static gboolean need_init = TRUE;
-	Display *dpy = GDK_DISPLAY();
+	Display *dpy = GDK_DISPLAY_XDISPLAY(gdk_display_get_default());
 	XModifierKeymap *xmk = XGetModifierMapping(dpy);
 	int m, k;
 
@@ -1161,7 +1170,7 @@ static void initModifiers(void)
 static void parseKeyString(MyKey *key, const char *str)
 {
 	char *k;
-	Display *dpy = GDK_DISPLAY();
+	Display *dpy = GDK_DISPLAY_XDISPLAY(gdk_display_get_default());
 
 	key->keycode = 0;
 	key->modifier = 0;
@@ -1252,7 +1261,8 @@ static gboolean mykey_cmp(gconstpointer a, gconstpointer b)
 static gboolean grabKey(MyKey *key)
 {
 	Window root;
-	Display *dpy = GDK_DISPLAY();
+	GdkDisplay *display = gdk_display_get_default();
+	Display *dpy = GDK_DISPLAY_XDISPLAY(display);
 	static gboolean need_init = TRUE;
 
 	if (need_init)
@@ -1262,7 +1272,7 @@ static gboolean grabKey(MyKey *key)
 				filter_keys, NULL);
 	}
 
-	gdk_error_trap_push();
+	gdk_x11_display_error_trap_push(display);
 
 	root = GDK_ROOT_WINDOW();
 
@@ -1277,16 +1287,17 @@ static gboolean grabKey(MyKey *key)
 	GRAB(key, CapsLockMask | NumLockMask);
 	GRAB(key, ScrollLockMask | CapsLockMask | NumLockMask);
 
-	gdk_flush();
-	return gdk_error_trap_pop() == Success;
+	gdk_display_flush(display);
+	return gdk_x11_display_error_trap_pop(display) == Success;
 }
 
 static gboolean ungrabKey(MyKey *key)
 {
 	Window root = GDK_ROOT_WINDOW();
-	Display *dpy = GDK_DISPLAY();
+	GdkDisplay *display = gdk_display_get_default();
+	Display *dpy = GDK_DISPLAY_XDISPLAY(display);
 
-	gdk_error_trap_push();
+	gdk_x11_display_error_trap_push(display);
 
 	UNGRAB(key, 0);
 
@@ -1298,8 +1309,8 @@ static gboolean ungrabKey(MyKey *key)
 	UNGRAB(key, CapsLockMask | NumLockMask);
 	UNGRAB(key, ScrollLockMask | CapsLockMask | NumLockMask);
 
-	gdk_flush();
-	return gdk_error_trap_pop() == Success;
+	gdk_display_flush(display);
+	return gdk_x11_display_error_trap_pop(display) == Success;
 }
 
 static void ungrab_key(Icon *icon)
@@ -1379,45 +1390,44 @@ static void icon_wink(Icon *icon)
 /* Sets icon_menu */
 static void create_menu(void)
 {
+	GtkWidget	*rox_menu;
 	GList		*items;
 
 	if (icon_menu) return;
 
-	icon_menu = menu_start("<icon>", NULL);
-	menu_start(N_("ROX-Filer"), icon_menu);
+	icon_menu = menu_start("<icon>", NULL, NULL);
+	rox_menu = menu_start(N_("_ROX-Filer"), icon_menu, NULL);
 
 #define adi menu_add_item
 #define ads menu_add_stock
 
-	ads(N_("About ROX-Filer..."), menu_rox_help, HELP_ABOUT , GTK_STOCK_DIALOG_INFO);
-	ads(N_("Show Help Files"   ), menu_rox_help, HELP_DIR   , GTK_STOCK_HELP);
-	adi(N_("Manual"            ), menu_rox_help, HELP_MANUAL);
-	menu_add_separator();
-	ads(N_("Options..."    ), menu_show_options, 0, GTK_STOCK_PREFERENCES);
-	ads(N_("Home Directory"), open_home        , 0, GTK_STOCK_HOME       );
+	ads(rox_menu, N_("About ROX-Filer..."), menu_rox_help, HELP_ABOUT , "dialog-information");
+	ads(rox_menu, N_("Show Help Files"   ), menu_rox_help, HELP_DIR   , "help-browser");
+	ads(rox_menu, N_("Manual"            ), menu_rox_help, HELP_MANUAL, "help-contents");
+	menu_add_separator(rox_menu);
+	ads(rox_menu, N_("Options..."    ), menu_show_options, 0, "preferences-system");
+	ads(rox_menu, N_("Home Directory"), open_home        , 0, "go-home"       );
 
-	icon_file_menu = menu_start(N_("File"), icon_menu);
+	icon_file_menu = menu_start(N_("File"), icon_menu, NULL);
 
-	adi(N_("Shift Open"       ), file_op, ACTION_SHIFT     );
-	ads(N_("Properties"       ), file_op, ACTION_PROPERTIES, GTK_STOCK_PROPERTIES);
-	ads(N_("Set Run Action..."), file_op, ACTION_RUN_ACTION, GTK_STOCK_EXECUTE   );
-	adi(N_("Set Icon..."      ), file_op, ACTION_SET_ICON  );
+	ads(icon_file_menu, N_("Shift Open"       ), file_op, ACTION_SHIFT, "text-x-generic");
+	ads(icon_file_menu, N_("Properties"       ), file_op, ACTION_PROPERTIES, "document-properties");
+	ads(icon_file_menu, N_("Set Run Action..."), file_op, ACTION_RUN_ACTION, "system-run");
+	ads(icon_file_menu, N_("Set Icon..."      ), file_op, ACTION_SET_ICON,   "applications-graphics");
 
-	menu_start(NULL, icon_menu);
-
-	ads(N_("Edit Item"     ), file_op     , ACTION_EDIT    , GTK_STOCK_PROPERTIES);
-	ads(N_("Show Location" ), file_op     , ACTION_LOCATION, GTK_STOCK_JUMP_TO   );
-	ads(N_("Remove Item(s)"), remove_items, 0              , GTK_STOCK_REMOVE    );
-	menu_add_separator();
+	ads(icon_menu, N_("Edit Item"     ), file_op     , ACTION_EDIT    , "document-properties");
+	ads(icon_menu, N_("Show Location" ), file_op     , ACTION_LOCATION, "go-jump"   );
+	ads(icon_menu, N_("Remove Item(s)"), remove_items, 0              , "list-remove"    );
+	menu_add_separator(icon_menu);
 
 	/* File '' label... */
 	items = gtk_container_get_children(GTK_CONTAINER(icon_menu));
-	icon_file_item = GTK_BIN(g_list_nth(items, 1)->data)->child;
+	icon_file_item = gtk_bin_get_child(GTK_BIN(g_list_nth(items, 1)->data));
 	g_list_free(items);
 
-	/* Shift Open... label */
+	/* Shift Open... item */
 	items = gtk_container_get_children(GTK_CONTAINER(icon_file_menu));
-	file_shift_item = GTK_BIN(items->data)->child;
+	file_shift_item = items->data;
 	g_list_free(items);
 
 	g_signal_connect(icon_menu, "unmap_event",

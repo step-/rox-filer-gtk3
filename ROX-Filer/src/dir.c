@@ -1,6 +1,8 @@
 /*
  * ROX-Filer, filer for the ROX desktop project
  * Copyright (C) 2006, Thomas Leonard and others (see changelog for details).
+ * Copyright (C) 2026, step <step.commons@gmail.com>.
+ *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the Free
  * Software Foundation; either version 2 of the License, or (at your option)
@@ -81,8 +83,8 @@ static Option o_close_dir_when_missing;
 /* Static prototypes */
 static void fsupdate(Directory *dir, gchar *pathname, gpointer data);
 static void call_scan_t(Directory *dir);
-static DirItem *_insert_item(Directory *dir, DirItem *item, const guchar *leafname, gboolean examine_now);
-static DirItem *insert_item(Directory *dir, const guchar *leafname, gboolean examine_now);
+static DirItem *_insert_item(Directory *dir, DirItem *item, const gchar *leafname, gboolean examine_now);
+static DirItem *insert_item(Directory *dir, const gchar *leafname, gboolean examine_now);
 static GPtrArray *hash_to_array(GHashTable *hash);
 static void dir_force_update_item(Directory *dir,
 		const gchar *leaf, gboolean thumb);
@@ -280,7 +282,7 @@ static void _dir_check_this(const char *path, bool force)
 		g_object_unref(dir);
 	}
 }
-void dir_check_this(const guchar *path)
+void dir_check_this(const gchar *path)
 {
 	_dir_check_this(path, false);
 }
@@ -398,7 +400,7 @@ void dir_stop(void)
 	g_hash_table_foreach(dir_cache->inode_to_stats, stop_scan, NULL);
 }
 
-static const guchar *make_path_to_buf(GString *buffer, const char *dir, const char *leaf)
+static const gchar *make_path_to_buf(GString *buffer, const char *dir, const char *leaf)
 {
 	g_string_assign(buffer, dir);
 
@@ -710,7 +712,8 @@ static gboolean compare_items(DirItem  *item, DirItem  *old)
 	 && (item->label == NULL || (
 			   item->label->red   == old->label->red
 			&& item->label->green == old->label->green
-			&& item->label->blue  == old->label->blue)))
+			&& item->label->blue  == old->label->blue
+			&& item->label->alpha == old->label->alpha)))
 		return TRUE;
 	return FALSE;
 }
@@ -720,7 +723,7 @@ static gboolean compare_items(DirItem  *item, DirItem  *old)
  * (leafname may be from the current DirItem item)
  * Ensure diritem_recent_time is reasonably up-to-date before calling this.
  */
-static DirItem *_insert_item(Directory *dir, DirItem *item, const guchar *leafname, gboolean examine_now)
+static DirItem *_insert_item(Directory *dir, DirItem *item, const gchar *leafname, gboolean examine_now)
 {
 	const gchar *full_path = make_path_to_buf(dir->strbuf, dir->pathname, leafname);
 
@@ -784,7 +787,7 @@ static DirItem *_insert_item(Directory *dir, DirItem *item, const guchar *leafna
 	delayed_notify(dir, examine_now);
 	return item;
 }
-static DirItem *insert_item(Directory *dir, const guchar *leafname, gboolean examine_now)
+static DirItem *insert_item(Directory *dir, const gchar *leafname, gboolean examine_now)
 {
 	if (leafname[0] == '.' && (leafname[1] == '\n' ||
 		(leafname[1] == '.' && leafname[2] == '\n')))
@@ -1091,7 +1094,7 @@ static void dir_scan(Directory *dir)
 	}
 
 	dir_set_scanning(dir, TRUE);
-	gdk_flush();
+	gdk_display_flush(gdk_display_get_default());
 
 	struct dirent *ent;
 	while ((ent = mc_readdir(d)))

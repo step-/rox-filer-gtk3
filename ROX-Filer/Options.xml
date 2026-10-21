@@ -26,6 +26,7 @@
         <vbox>
           <toggle name='bind_new_button_1' label='New window on button 1'>Clicking with mouse button 1 (usually the left button) opens a directory in a new window with this turned on. Clicking with the button-2 (middle) will reuse the current window.</toggle>
           <toggle name='bind_single_click' label='Single-click navigation'>Clicking on an item opens it with this on. Hold down Control to select the item instead. If off, clicking once selects an item; double click to open things.</toggle>
+          <toggle name='group_digits_modifier' label='Digits select, Alt+digit jumps to groups'>Typing a digit starts a progressive Reg Select for names beginning with that digit, instead of jumping to a numbered group (a saved directory plus the saved file selection, if any). Saved groups are then jumped to with Alt+digit, which returns to the saved directory and reselects the saved files; saving with Control+digit is unchanged. Off keeps the classic bindings (bare digit jumps).</toggle>
           <toggle name='bind_dclick_resizes' label='Double-click on background resizes'>If on then double clicking on the window background resizes the window, just like clicking on the Automatic size mode button in the toolbar.</toggle>
         </vbox>
       </hbox>
@@ -36,7 +37,7 @@
       <toggle name='display_newly_first' label='Newly comes first (for sort by Date)'>If on, the Sort by Dates are reversed.</toggle>
     </frame>
 
-	<frame label='etc'>
+	<frame label='Tweaks'>
 	<toggle name='xattr_show' label='Show extended attribute indicator'>
 		If this is on then files which have one or more extended attributes set will have an emblem added to indicate this.</toggle>
 	<toggle name='hide_root_msg' label="Hide the message bar Running as user 'root'">
@@ -51,7 +52,7 @@
 		If this is on then display options for a new window are inherited from the source window if possible, otherwise they are set to the defaults below.</toggle>
 	<hbox><vbox>
 		<menu name='filer_view_type' label='View type:' sizegroup='disp-def'>
-			<item label='Icons View' value='0'/>
+			<item label='Icon View' value='0'/>
 			<item label='List View' value='1'/>
 		</menu>
 		<menu name='display_sort_by' label='Sort by:' sizegroup='disp-def'>
@@ -67,6 +68,8 @@
 		If this is on then files whose names start with a dot are shown too, otherwise they are hidden.</toggle>
 	<toggle name='enable_dot_hidden_file' label='Enable .hidden file'>
 		If this is on then, in addition to files whose names start with a dot, also items listed in ".hidden" file will be treated as hidden.</toggle>
+	<toggle name='view_show_focus_rect' label='Show keyboard focus indicator'>
+		Show a rectangle around the focused item when navigating with the keyboard. If the current theme already provides a focus indicator, this setting has no effect.</toggle>
 	<spacer/>
 	<numentry name='huge_size' label='Huge Icons size:' unit='pixels' min='64' max='1024' width='4'>
 		Resolution depends on 'Thumbnails->Cache File Size'.</numentry>
@@ -122,10 +125,10 @@
         <toggle name='display_show_headers' label='Show column headings'>If this is on then column headings will be shown in the list view.</toggle>
         <toggle name='display_show_full_type' label='Show full type'>If this is on then the full description of each object's type will be show rather than a short summary of its basic type.</toggle>
         <toggle name='display_less_clickable_cols' label='Only icons and names are clickable'>For lasso.</toggle>
-        <toggle name='display_save_col_order' label='Save columns order'>If this is on reordering columns is saved</toggle>
+        <toggle name='display_save_col_order' label='Save column order'>If this is on reordering columns is saved</toggle>
 
 		<hbox>
-			<numentry name='display_name_width' label='Name column width (Max):' unit='pixels' min='0' max='2000' width='4'>Maximum width for the Name Column.</numentry>
+			<numentry name='display_name_width' label='Width of Name column:' unit='pixels' min='0' max='2000' width='4'>Maximum width of the Name column.</numentry>
 		</hbox>
       </frame>
       <frame label='Show Columns'>
@@ -157,7 +160,7 @@
 	<label>Select the buttons you want on the bar:</label>
 	<spacer/>
         <tool-options name='toolbar_disable'/>
-        <toggle name='toolbar_min_width' label='Width of toolbar sets minimum width of window'>Each filer window is constrained to be wide enough to show the whole of the toolbar</toggle>
+        <numentry name='toolbar_min_buttons' label='Auto-resize shows at least' unit='buttons' min='0' max='15' width='3'>When an icon view auto-resizes, keep the window wide enough to show this many toolbar buttons; buttons that do not fit move into the overflow pulldown. Manual resizing is not affected. 0 lets the filer decide.</numentry>
       </frame>
       <frame label='Minibuffer'>
         <toggle name='filer_beep_fail' label='Beep if Tab-completion fails'>When using the `Enter Path...' minibuffer and Tab is pressed, beep if nothing happens (eg, because there are several possibilities and the next letter varies).</toggle>
@@ -183,8 +186,10 @@
 			When no items in a sub-directory have a thumbnail, this process tries to create a thumbnail. If you don't like the choice, visit the sub-directory and middle-click the scan button in the toolbar to choose the first item.
 		</toggle>
 		<spacer/>
-         <launch uri="http://www.kerofin.demon.co.uk/2005/interfaces/VideoThumbnail" label="Video thumbnails" appname="VideoThumbnail"/>
       </frame>
+	<frame label='Thumbnailers'>
+		<label help='1'>Thumbnailers for additional file types can be added to the ROX-Filer system and user 'MIME-thumb' configuration directories.</label>
+	</frame>
       <frame label='Thumbnails cache'>
 		  <label help='1'>To speed things up, the generated thumbnails are stored in the hidden ~/.cache/thumbnails directory. Click here to remove all the cached thumbnails. They will be created again as needed.</label>
 	<hbox>
@@ -192,10 +197,8 @@
       <numentry name='purge_days' label='being left over ' unit='days' min='0' max='999' width='3'>0 is all.</numentry>
 	</hbox>
 	<spacer/>
-        <launch uri="http://www.kerofin.demon.co.uk/2005/interfaces/Thumbs" label="Manage thumbnails" appname="Thumbs"/>
-	<spacer/>
 	<hbox>
-		<menu name='thumb_file_size' label='Cache File Size:'>
+		<menu name='thumb_file_size' label='Thumb file size:'>
 			<item label='Small (64px)' value='64'/>
 			<item label='Normal (128px)' value='128'/>
 			<item label='Large (256px)' value='256'/>
@@ -216,20 +219,20 @@
   <section title='Pinboard'>
     <label help='1'>When using a pinboard, you can drag files and applications onto the desktop background to create shortcuts to them.</label>
     <frame label='Appearance'>
-      <hbox>
-        <vbox>
-	  <colour name='pinboard_fg_colour' label='Foreground:'/>
-	  <colour name='pinboard_shadow_colour' label='Text shadow:'/>
-	  <colour name='pinboard_bg_colour' label='Background:'/>
-        </vbox>
-	<hbox>
-          <radio-group name='pinboard_shadow_labels'>
-            <radio label='No shadow' value='0'/>
-            <radio label='Thin' value='1'/>
-            <radio label='Thick' value='2'/>
-          </radio-group>
-	</hbox>
-      </hbox>
+      <grid row-spacing='4' column-spacing='12'>
+          <colour name='pinboard_fg_colour' label='Foreground:' col='0' row='0'/>
+          <colour name='pinboard_shadow_colour' label='Text shadow:' col='0' row='1'/>
+          <hbox col='1' row='1'>
+            <radio-group name='pinboard_shadow_labels'>
+              <radio label='No shadow' value='0'/>
+              <radio label='Thin' value='1'/>
+              <radio label='Thick' value='2'/>
+            </radio-group>
+          </hbox>
+          <colour name='pinboard_label_bg_colour' label='Text background:' col='0' row='2'/>
+          <numentry name='pinboard_label_bg_transparency' label='Transparency:' unit='%' min='0' max='100' width='3' col='1' row='2'/>
+          <colour name='pinboard_bg_colour' label='Background:' col='0' row='3'/>
+      </grid>
       <spacer/>
       <font override='1' label='Use custom font:' name='label_font'>The font used for the text displayed under the icons</font>
       <spacer/>
@@ -321,7 +324,7 @@ operation, such as copying or deleting some files.</label>
      <entry name='action_eject_command' label='Eject command'>The command used to eject removable media. If unsure, use "eject".</entry>
     </frame>
 	<frame label='Wink'>
-		<toggle name='action_wink' label='Wink last move/copy/linked item'></toggle>
+		<toggle name='action_wink' label='Wink last move/copy/linked item'>Briefly flash the target item.</toggle>
 	</frame>
   </section>
   <section title='Drag and Drop'>
@@ -354,8 +357,12 @@ xterm -e wget $1</entry>
 	  <item label='No Icons' value='0'/>
 	  <item label='Small Icons' value='1'/>
 	  <item label='Large Icons' value='2'/>
-	  <item label='Same as current window' value='4'/>
-	  <item label='Same as default' value='5'/>
+	  <item label='Huge Icons' value='3'/>
+	  <!-- Withdrawn [20260924203220]: the icon view no longer drives the
+	       menu icon size. The values stay reserved, because a legacy
+	       Options file may still hold one, so neither may be reused. -->
+	  <!-- <item label='Same as current window' value='4'/> -->
+	  <!-- <item label='Same as default' value='5'/> -->
 	</menu>
       </hbox>
     </frame>
@@ -379,6 +386,7 @@ xterm -e wget $1</entry>
 			<icon-theme-chooser label='Icon theme' name='icon_theme'/>
 		</hbox>
       <spacer/>
+      <label help='1'>Only themes that provide icons for MIME types are listed.</label>
       <label help='1'>Themes should be placed inside the ~/.icons directory.</label>
       <label help='1'>Use the 'Set Icon...' dialog box to set the icon for each MIME type. Note that icons set this way override those from the selected theme.</label>
     </frame>
@@ -405,6 +413,7 @@ xterm -e wget $1</entry>
             <colour name='display_unkn_colour' label='Unknown type:'/>
           </vbox>
         </hbox>
+        <reset-type-colours/>
       </frame>
 
 		<frame label='Background colour'>
@@ -412,12 +421,16 @@ xterm -e wget $1</entry>
 				<toggle name='use_background_colour' label='Use custom background colour:'></toggle>
 				<colour name='background_colour' label=''/>
 			</hbox>
-			<spacer/>
+		</frame>
+		<frame label='Transparency'>
 			<hbox>
-				<numentry name='view_alpha' label='Transparency:' unit='%' min='0' max='100' width='3'>
+				<numentry name='view_alpha' label='Icon View:' unit='%' min='0' max='100' width='3'>
 				This depends on your environment. Basically if your windows have shadows, then they can also be transparent.
 				</numentry>
 			</hbox>
+		</frame>
+		<frame label='Stylesheet'>
+			<reload-css label='Reload stylesheet'/>
 		</frame>
     </section>
   <section title='Compatibility'>
@@ -436,11 +449,11 @@ xterm -e wget $1</entry>
       <toggle name='dnd_no_hostnames' label="Don't use hostnames">Some older applications don't support XDND fully and may need to have this option turned on. Use this if dragging files to an application shows a + sign on the pointer but the drop doesn't work.</toggle>
     </frame>
 
-	<frame label='etc'>
+	<frame label='Tweaks'>
 		<toggle name='xattr_ignore' label="Don't use extended attributes">This disables the use of extended attributes available in newer operating systems and file systems.  With this option set the 'Set Type' menu entry is disabled, the MIME type of the file is only derived from the file name and the properties window does not report extended attributes.</toggle>
 
-		<toggle name='fast_font_calc' label='Fast width calculating'>
-			If this is on, string width calculations will be faster but less accurate in Small Icons mode.
+		<toggle name='fast_font_calc' label='Fast string width'>
+			Enable this to compute label sizes faster in small-icon mode.
 		</toggle>
 		<toggle name='purge_dir_cache' label='Purge Dir Cache'>
 			Don't check this if you haven't problems with RAM.

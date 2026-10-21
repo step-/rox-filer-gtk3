@@ -1,6 +1,7 @@
 /*
  * ROX-Filer, filer for the ROX desktop project
  * Copyright (C) 2006, Thomas Leonard and others (see changelog for details).
+ * Copyright (C) 2026, step <step.commons@gmail.com>.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the Free
@@ -35,6 +36,7 @@
 #include <glib.h>
 
 #include "global.h"
+#include "main.h"
 #include "type.h"
 #include "xtypes.h"
 #include "options.h"
@@ -393,9 +395,9 @@ int xtype_set(const char *path, const MIME_type *type)
 }
 
 /* Label support */
-GdkColor *xlabel_get(const char *path)
+GdkRGBA *xlabel_get(const char *path)
 {
-	GdkColor *col = NULL;
+	GdkRGBA *col = NULL;
 	gchar *buf;
 	char *nl;
 
@@ -406,8 +408,8 @@ GdkColor *xlabel_get(const char *path)
 		nl = strchr(buf, '\n');
 		if(nl)
 			*nl = 0;
-		col = g_new(GdkColor, 1);
-		if(gdk_color_parse(buf, col) == FALSE) {
+		col = g_new(GdkRGBA, 1);
+		if(gdk_rgba_parse(col, buf) == FALSE) {
 			g_free(col);
 			col = NULL;
 		}
@@ -781,7 +783,7 @@ static void cell_edited(GtkCellRendererText *cell, const gchar *path_string, con
 	gtk_tree_path_free(path);
 }
 
-void xattrs_browser(DirItem *item, const guchar *path)
+void xattrs_browser(DirItem *item, const gchar *path)
 {
 	GtkDialog	*dialog;
 	GtkWidget	*content, *hbox, *name;
@@ -806,7 +808,7 @@ void xattrs_browser(DirItem *item, const guchar *path)
 
 	content = gtk_dialog_get_content_area(dialog);
 
-	hbox = gtk_hbox_new(FALSE,4);
+	hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
 	gtk_box_pack_start(GTK_BOX(content), hbox, FALSE, TRUE, 4);
 	gtk_box_pack_start(GTK_BOX(hbox),
 			   gtk_image_new_from_pixbuf(di_image(item)->pixbuf),
@@ -816,7 +818,7 @@ void xattrs_browser(DirItem *item, const guchar *path)
 		name = gtk_label_new(item->leafname);
 	else
 	{
-		guchar *u8;
+		gchar *u8;
 
 		u8 = to_utf8(item->leafname);
 		name = gtk_label_new(u8);
@@ -839,7 +841,6 @@ void xattrs_browser(DirItem *item, const guchar *path)
 	tree = gtk_tree_view_new_with_model(mod);
 	/* wrapper for variable passing */
 	data[0] = mod; data[1] = arr; data[2] = tree; data[3] = arr_old; data[4] = g_strdup(path);
-	gtk_tree_view_set_rules_hint(GTK_TREE_VIEW(tree),TRUE);
 	gtk_tree_selection_set_mode(gtk_tree_view_get_selection(GTK_TREE_VIEW(tree)),
 			GTK_SELECTION_SINGLE);
 	/* add columns */
@@ -856,19 +857,27 @@ void xattrs_browser(DirItem *item, const guchar *path)
 	g_object_unref(mod);
 	gtk_container_add(GTK_CONTAINER(sw),tree);
 
-	hbox = gtk_hbox_new(FALSE,4);
-	but = gtk_button_new_from_stock(GTK_STOCK_ADD);
+	hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
+	but = button_new_mixed("list-add", _("_Add"));
 	g_signal_connect(but, "clicked", G_CALLBACK(add_item), data);
 	gtk_box_pack_start(GTK_BOX(hbox),but,FALSE,FALSE,0);
-	but = gtk_button_new_from_stock(GTK_STOCK_REMOVE);
+	but = button_new_mixed("list-remove", _("_Remove"));
 	g_signal_connect(but, "clicked", G_CALLBACK(remove_item), data);
 	gtk_box_pack_start(GTK_BOX(hbox),but,FALSE,FALSE,0);
 	gtk_box_pack_start(GTK_BOX(content),hbox,FALSE,FALSE,0);
 
-	gtk_dialog_add_button(dialog,GTK_STOCK_APPLY,GTK_RESPONSE_APPLY);
-	gtk_dialog_add_button(dialog,GTK_STOCK_CLOSE,GTK_RESPONSE_CLOSE);
+	gtk_dialog_add_action_widget(dialog,
+			button_new_mixed("gtk-apply", _("_Apply")),
+			GTK_RESPONSE_APPLY);
+	gtk_dialog_add_action_widget(dialog,
+			button_new_mixed("window-close", _("_Close")),
+			GTK_RESPONSE_CLOSE);
 	g_signal_connect(dialog, "response", G_CALLBACK(dialog_response), data);
 	gtk_dialog_set_default_response(dialog, GTK_RESPONSE_OK);
+	rox_dialog_set_parent_full(GTK_WIDGET(dialog), FALSE);
+	number_of_windows++;
+	g_signal_connect(dialog, "destroy",
+			G_CALLBACK(one_less_window), NULL);
 	gtk_widget_show_all(GTK_WIDGET(dialog));
 }
 #endif

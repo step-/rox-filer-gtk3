@@ -1,6 +1,7 @@
 /*
  * ROX-Filer, filer for the ROX desktop project
  * Copyright (C) 2006, Thomas Leonard and others (see changelog for details).
+ * Copyright (C) 2026, step <step.commons@gmail.com>.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the Free
@@ -67,7 +68,8 @@ xmlNode *xml_get_section(XMLwrapper *xml, const gchar *ns, const gchar *name)
 	g_return_val_if_fail(xml != NULL, NULL);
 	g_return_val_if_fail(xml->doc != NULL, NULL);
 
-	return get_subnode(xmlDocGetRootElement(xml->doc), ns, name);
+	return get_subnode(xmlDocGetRootElement(xml->doc),
+			   (const xmlChar *) ns, (const xmlChar *) name);
 }
 
 /* Return the (first) child of this node with the given name.
@@ -76,14 +78,15 @@ xmlNode *xml_get_section(XMLwrapper *xml, const gchar *ns, const gchar *name)
  * xml:lang attributes, then the one matching the current locale is used,
  * or the first one if none match.
  */
-xmlNode *get_subnode(xmlNode *node, const char *namespaceURI, const char *name)
+xmlNode *get_subnode(xmlNode *node, const xmlChar *namespaceURI,
+		     const xmlChar *name)
 {
 	for (node = node->xmlChildrenNode; node; node = node->next)
 	{
 		if (node->type != XML_ELEMENT_NODE)
 			continue;
 
-		if (strcmp(node->name, name))
+		if (xmlStrcmp(node->name, name))
 			continue;
 
 		if (node->ns == NULL || namespaceURI == NULL)
@@ -93,7 +96,7 @@ xmlNode *get_subnode(xmlNode *node, const char *namespaceURI, const char *name)
 			continue;
 		}
 
-		if (strcmp(node->ns->href, namespaceURI) == 0)
+		if (xmlStrcmp(node->ns->href, namespaceURI) == 0)
 			return best_lang(node);
 	}
 
@@ -112,8 +115,8 @@ static xmlNode *best_lang(xmlNode *first)
 {
 	xmlNode *node = first;
 	xmlNode *fallback = NULL, *fallback2 = NULL;
-	const char *target_lang = current_lang ? current_lang : "en";
-	char *territory;
+	const gchar *target_lang = current_lang ? current_lang : "en";
+	gchar *territory;
 
 	g_return_val_if_fail(first != NULL, NULL);
 
@@ -121,13 +124,13 @@ static xmlNode *best_lang(xmlNode *first)
 
 	for (node = first->next; node; node = node->next)
 	{
-		char *lang;
+		gchar *lang;
 
 		if (node->type != XML_ELEMENT_NODE)
 			continue;
 
 		/* Check names match... */
-		if (strcmp(node->name, first->name))
+		if (xmlStrcmp(node->name, first->name))
 			break;
 
 		/* Check namespaces match... */
@@ -135,10 +138,10 @@ static xmlNode *best_lang(xmlNode *first)
 			break;
 
 		if (node->ns && first->ns)
-			if (strcmp(node->ns->href, first->ns->href))
+			if (xmlStrcmp(node->ns->href, first->ns->href))
 				break;
 
-		lang = xmlNodeGetLang(node);
+		lang = (gchar *) xmlNodeGetLang(node);
 
 		if (!lang)
 			continue;

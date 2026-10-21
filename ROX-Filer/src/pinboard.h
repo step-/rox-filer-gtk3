@@ -13,7 +13,8 @@ extern Icon *pinboard_drag_in_progress;
 extern Option o_pinboard_tasklist_per_workspace;
 
 extern PangoFontDescription *pinboard_font;
-extern GdkColor pin_text_fg_col, pin_text_bg_col;
+extern GdkRGBA pin_text_fg_col, pin_text_bg_col;
+extern GdkRGBA pin_label_bg_col;
 
 typedef enum {
 	BACKDROP_NONE,
@@ -37,7 +38,8 @@ void pinboard_add_widget(GtkWidget *widget, const gchar *name);
 void pinboard_moved_widget(GtkWidget *widget, const gchar *name,
 			   int x, int y);
 void pinboard_update_size(void);
-void draw_label_shadow(WrappedLabel *wl, GdkRegion *region);
+void draw_label_shadow(WrappedLabel *wl, cairo_region_t *region);
 void pinboard_set_backdrop(const gchar *path, BackdropStyle style);
+void pinboard_show_backdrop_box(gpointer data, guint action, GtkWidget *widget);
 
 #endif /* _PINBOARD_H */

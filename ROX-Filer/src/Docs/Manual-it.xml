@@ -493,16 +493,30 @@
        lungo per essere visualizzato nella finestra principale.
      </entry></row>
 
+     <row><entry><keycap>Shift</keycap>+<keycap>Menu</keycap></entry><entry>
+       Apre il menu <guimenu>Invia a...</guimenu> dell'elemento
+       selezionato (vedere la sezione <xref linkend="SendTo"/>).
+     </entry></row>
+
+     <row><entry><keycap>Shift</keycap>+<keycap>F10</keycap></entry><entry>
+       Apre il menu <guimenu>Invia a...</guimenu> dell'elemento
+       selezionato (vedere la sezione <xref linkend="SendTo"/>).
+     </entry></row>
+
+     <row><entry><keycap>Shift</keycap>+<keycap>|</keycap></entry><entry>
+       Apre il menu <guimenu>Invia a...</guimenu> dell'elemento
+       selezionato (vedere la sezione <xref linkend="SendTo"/>).
+     </entry></row>
+
   </tbody></tgroup></informaltable>
 
   <para>
-   Se sono abilitate le associazioni dei tasti definite dall'utente, allora altri tasti
-   possono essere facilmente impostati attivando il menù, spostando il puntatore su
-   una voce che si desidera usare e premendo un tasto. Quest'ultimo appare ora nel menù
-   e può essere usato da qui in avanti. Le associazioni dei tasti sono automaticamente salvate
-   quando si chiude il filer. È possibile usare un gestore di XSettings, come ROX-Session,
-   per attivare questa caratteristica su tutte le applicazioni Gtk+-2.0.
-  </para>
+    Per impostare una combinazione di tasti personalizzata per una voce di menu, aprire la finestra
+    di dialogo Scorciatoie da tastiera dalla sezione Menu della finestra Opzioni. Navigare nella struttura
+    del menu fino alla voce desiderata, fare doppio clic sulla cella Scorciatoia e premere la combinazione
+    di tasti. Per rimuovere una combinazione di tasti, fare doppio clic sulla cella e premere
+    <keycap>Backspace</keycap>.
+   </para>
  </chapter>
 
  <chapter id="selection">

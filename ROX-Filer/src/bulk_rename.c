@@ -1,6 +1,7 @@
 /*
  * ROX-Filer, filer for the ROX desktop project
  * Copyright (C) 2006, Thomas Leonard and others (see changelog for details).
+ * Copyright (C) 2026, step <step.commons@gmail.com>.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the Free
@@ -69,26 +70,27 @@ void bulk_rename(const char *dir, GList *items)
 	gtk_window_set_title(GTK_WINDOW(box), _("Bulk rename files"));
 //	gtk_dialog_set_has_separator(GTK_DIALOG(box), FALSE);
 
-	button = button_new_mixed(GTK_STOCK_REFRESH, _("Reset"));
+	button = button_new_mixed("view-refresh", _("Reset"));
 	gtk_widget_set_can_default(button, TRUE);
 	gtk_dialog_add_action_widget(GTK_DIALOG(box), button, RESPONSE_RESET);
 	gtk_dialog_set_default_response(GTK_DIALOG(box), RESPONSE_RESET);
 	gtk_widget_set_tooltip_text(button,
 			_("Make the New column a copy of Old"));
 
-	gtk_dialog_add_button(GTK_DIALOG(box),
-				GTK_STOCK_CANCEL, GTK_RESPONSE_CANCEL);
+	gtk_dialog_add_action_widget(GTK_DIALOG(box),
+			button_new_mixed("process-stop", _("_Cancel")),
+			GTK_RESPONSE_CANCEL);
 
-	button = button_new_mixed(GTK_STOCK_EXECUTE, _("_Rename"));
+	button = button_new_mixed("system-run", _("_Rename"));
 	gtk_widget_set_can_default(button, TRUE);
 	gtk_dialog_add_action_widget(GTK_DIALOG(box), button, RESPONSE_RENAME);
 	gtk_dialog_set_default_response(GTK_DIALOG(box), RESPONSE_RENAME);
 
 	/* Replace */
 
-	hbox = gtk_hbox_new(FALSE, 4);
+	hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
 	gtk_container_set_border_width(GTK_CONTAINER(hbox), 4);
-	gtk_box_pack_start(GTK_BOX(GTK_DIALOG(box)->vbox),
+	gtk_box_pack_start(GTK_BOX(gtk_dialog_get_content_area(GTK_DIALOG(box))),
 				hbox, FALSE, TRUE, 0);
 
 	gtk_box_pack_start(GTK_BOX(hbox),
@@ -159,7 +161,7 @@ void bulk_rename(const char *dir, GList *items)
 						GTK_SHADOW_IN);
 	gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(swin),
 				GTK_POLICY_AUTOMATIC, GTK_POLICY_ALWAYS);
-	gtk_box_pack_start(GTK_BOX(GTK_DIALOG(box)->vbox), swin, TRUE, TRUE, 0);
+	gtk_box_pack_start(GTK_BOX(gtk_dialog_get_content_area(GTK_DIALOG(box))), swin, TRUE, TRUE, 0);
 	gtk_container_add(GTK_CONTAINER(swin), tree);
 
 	while (items) {
@@ -173,7 +175,7 @@ void bulk_rename(const char *dir, GList *items)
 	}
 
 	gtk_widget_show_all(tree);
-	gtk_widget_size_request(tree, &req);
+	gtk_widget_get_preferred_size(tree, NULL, &req);
 	req.width = MIN(req.width + 50, screen_width - 50);
 	req.height = MIN(req.height + 150, screen_height - 50);
 
@@ -182,6 +184,7 @@ void bulk_rename(const char *dir, GList *items)
 	number_of_windows++;
 	g_signal_connect(box, "destroy", G_CALLBACK(one_less_window), NULL);
 	g_signal_connect(box, "response", G_CALLBACK(response), model);
+	rox_dialog_set_parent_full(box, FALSE);
 	gtk_widget_show_all(box);
 }
 
@@ -460,7 +463,7 @@ static gboolean rename_items(const char *dir, GtkListStore *list)
 				"This will cause the files to end up in "
 				"different directories. "
 				"Continue?"), slash_example);
-		if (!confirm(message, GTK_STOCK_EXECUTE, "Rename anyway"))
+		if (!confirm(message, "system-run", "Rename anyway"))
 		{
 			g_free(message);
 			goto fail;

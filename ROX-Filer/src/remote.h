@@ -6,8 +6,10 @@
 #ifndef _REMOTE_H
 #define _REMOTE_H
 
-gboolean remote_init(xmlDocPtr rpc, gboolean new_copy);
+gboolean remote_init(xmlDocPtr rpc, gboolean new_copy, gboolean disable_rpc);
 xmlDocPtr run_soap(xmlDocPtr soap);
+void remote_reload_css(void);
+void remote_shutdown(void);
 
 gchar **extract_soap_errors(xmlDocPtr reply);
 

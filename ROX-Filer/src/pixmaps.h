@@ -19,7 +19,8 @@ extern MaskedPixmap *im_appdir;
 
 extern MaskedPixmap *im_dirs;
 
-extern GtkIconSize mount_icon_size;
+/* Logical size (in pixels) of emblem overlays */
+#define ROX_EMBLEM_SIZE 14
 
 /* If making the huge size larger, be sure to update SMALL_IMAGE_THRESHOLD! */
 #define HUGE_LIMIT_F 1024.0
@@ -69,7 +70,8 @@ struct _MaskedPixmap
 };
 
 void pixmaps_init(void);
-void pixmap_make_huge(MaskedPixmap *mp);
+GdkPixbuf *pixmaps_get_emblem(const char *stock_id);
+GdkPixbuf *pixmaps_get_emblem_scaled(const char *stock_id, int size, int scale);
 void pixmap_make_small(MaskedPixmap *mp);
 MaskedPixmap *load_pixmap(const char *name);
 void pixmap_background_thumb(const gchar *path, gboolean noorder, GFunc callback, gpointer data);
@@ -79,7 +81,7 @@ GdkPixbuf *scale_pixbuf(GdkPixbuf *src, int max_w, int max_h);
 gint pixmap_check_thumb(const gchar *path);
 GdkPixbuf *pixmap_load_thumb(const gchar *path);
 char *pixmap_make_thumb_path(const char *path);
-GdkPixbuf *pixmap_make_lined(GdkPixbuf *src, GdkColor *colour);
+GdkPixbuf *pixmap_make_lined(GdkPixbuf *src, GdkRGBA *colour);
 MaskedPixmap *pixmap_from_desktop_file(const char *path);
 
 #endif /* _PIXMAP_H */

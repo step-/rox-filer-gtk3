@@ -15,7 +15,7 @@ typedef struct _DropBox DropBox;
 
 GtkWidget *drop_box_new(const char *message);
 GType drop_box_get_type(void);
-void drop_box_set_path(DropBox *drop_box, const guchar *path);
+void drop_box_set_path(DropBox *drop_box, const gchar *path);
 const gchar *drop_box_get_path(DropBox *drop_box);
 
 #endif /* __DROP_BOX_H__ */

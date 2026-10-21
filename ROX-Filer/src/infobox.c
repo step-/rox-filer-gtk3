@@ -1,6 +1,7 @@
 /*
  * ROX-Filer, filer for the ROX desktop project
  * Copyright (C) 2006, Thomas Leonard and others (see changelog for details).
+ * Copyright (C) 2026, step <step.commons@gmail.com>.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the Free
@@ -41,6 +42,7 @@
 #include "appinfo.h"
 #include "dnd.h"	/* For xa_string */
 #include "run.h"	/* For show_help_files() */
+#include "choices.h"
 #include "xml.h"
 #include "mount.h"
 #include "pixmaps.h"
@@ -77,17 +79,17 @@ struct _Permissions
 
 /* Static prototypes */
 static void refresh_info(GObject *window);
-static GtkWidget *make_vbox(const guchar *path, GObject *window);
-static GtkWidget *make_details(const guchar *path, DirItem *item,
+static GtkWidget *make_vbox(const gchar *path, GObject *window);
+static GtkWidget *make_details(const gchar *path, DirItem *item,
 				GObject *window);
-static GtkWidget *make_about(const guchar *path, XMLwrapper *ai);
+static GtkWidget *make_about(const gchar *path, XMLwrapper *ai);
 static GtkWidget *make_about_desktop(const gchar *path);
-static GtkWidget *make_file_says(const guchar *path);
+static GtkWidget *make_file_says(const gchar *path);
 static GtkWidget *make_permissions(const gchar *path, DirItem *item);
 static GtkWidget *make_unmount_options(const gchar *path);
-static void add_file_output(FileStatus *fs,
-			    gint source, GdkInputCondition condition);
-static const gchar *pretty_type(DirItem *file, const guchar *path);
+static gboolean add_file_output(GIOChannel *source,
+			    GIOCondition condition, gpointer user_data);
+static const gchar *pretty_type(DirItem *file, const gchar *path);
 static void got_response(GObject *window, gint response, gpointer data);
 static void file_info_destroyed(GtkWidget *widget, FileStatus *fs);
 
@@ -111,7 +113,7 @@ void infobox_show_list(GList *paths)
 
 		message = g_strdup_printf(
 			_("Are you sure you want to open %d windows?"), n);
-		ok = confirm(message, GTK_STOCK_YES, _("Show Info"));
+		ok = confirm(message, "gtk-ok", _("Show Info"));
 		g_free(message);
 		if (!ok)
 			return;
@@ -131,25 +133,36 @@ void infobox_new(const gchar *pathname)
 
 	path = g_strdup(pathname); /* Gets attached to window & freed later */
 
-	window = gtk_dialog_new_with_buttons(
+	window = gtk_dialog_new();
+	gtk_window_set_title(GTK_WINDOW(window),
 			g_utf8_validate(path, -1, NULL) ? path
-							: _("(bad utf-8)"),
-				NULL, GTK_DIALOG_NO_SEPARATOR,
-				GTK_STOCK_CLOSE, GTK_RESPONSE_CANCEL,
-				GTK_STOCK_REFRESH, GTK_RESPONSE_APPLY,
-				NULL);
+							: _("(bad utf-8)"));
+
+	gtk_dialog_add_action_widget(GTK_DIALOG(window),
+			button_new_mixed("window-close", _("_Close")),
+			GTK_RESPONSE_CANCEL);
+	gtk_dialog_add_action_widget(GTK_DIALOG(window),
+			button_new_mixed("view-refresh", _("_Refresh")),
+			GTK_RESPONSE_APPLY);
 
 	gtk_window_set_position(GTK_WINDOW(window), GTK_WIN_POS_MOUSE);
 
 	owindow = G_OBJECT(window);
 	details = make_vbox(path, owindow);
-	gtk_box_pack_start(GTK_BOX(GTK_DIALOG(window)->vbox),
+	gtk_box_pack_start(GTK_BOX(gtk_dialog_get_content_area(GTK_DIALOG(window))),
 				    details, TRUE, TRUE, 0);
 
 	g_object_set_data(owindow, "details", details);
 	g_object_set_data_full(owindow, "path", path, g_free);
 
 	g_signal_connect(window, "response", G_CALLBACK(got_response), NULL);
+	/* Decrement on every destruction route, not just responses:
+	 * destroy-with-parent tears the box down without emitting
+	 * "response". */
+	g_signal_connect(window, "destroy",
+			G_CALLBACK(one_less_window), NULL);
+
+	rox_dialog_set_parent_full(window, FALSE);
 
 	number_of_windows++;
 	gtk_widget_show_all(window);
@@ -166,21 +179,20 @@ static void got_response(GObject *window, gint response, gpointer data)
 	else
 	{
 		gtk_widget_destroy(GTK_WIDGET(window));
-		one_less_window();
 	}
 }
 
 static void refresh_info(GObject *window)
 {
 	GtkWidget	*details, *vbox;
-	guchar		*path;
+	gchar		*path;
 
 	path = g_object_get_data(window, "path");
 	details = g_object_get_data(window, "details");
 	g_return_if_fail(details != NULL);
 	g_return_if_fail(path != NULL);
 
-	vbox = details->parent;
+	vbox = gtk_widget_get_parent(details);
 	gtk_widget_destroy(details);
 
 	details = make_vbox(path, window);
@@ -202,7 +214,7 @@ static void add_frame(GtkBox *vbox, GtkWidget *list)
 /* Create the VBox widget that contains the details.
  * Note that 'path' must not be freed until the vbox is destroyed.
  */
-static GtkWidget *make_vbox(const guchar *path, GObject *window)
+static GtkWidget *make_vbox(const gchar *path, GObject *window)
 {
 	DirItem		*item;
 	GtkBox		*vbox;
@@ -223,11 +235,11 @@ static GtkWidget *make_vbox(const guchar *path, GObject *window)
 	if (ai)
 		about = xml_get_section(ai, NULL, "About");
 
-	vbox = GTK_BOX(gtk_vbox_new(FALSE, 4));
+	vbox = GTK_BOX(gtk_box_new(GTK_ORIENTATION_VERTICAL, 4));
 	gtk_container_set_border_width(GTK_CONTAINER(vbox), 4);
 
 	/* Heading, with icon and name */
-	hbox = gtk_hbox_new(FALSE, 4);
+	hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
 	gtk_box_pack_start(vbox, hbox, FALSE, TRUE, 0);
 	gtk_box_pack_start(GTK_BOX(hbox),
 			   gtk_image_new_from_pixbuf(di_image(item)->pixbuf),
@@ -237,7 +249,7 @@ static GtkWidget *make_vbox(const guchar *path, GObject *window)
 		name = gtk_label_new(item->leafname);
 	else
 	{
-		guchar *u8;
+		gchar *u8;
 
 		u8 = to_utf8(item->leafname);
 		name = gtk_label_new(u8);
@@ -246,7 +258,8 @@ static GtkWidget *make_vbox(const guchar *path, GObject *window)
 	gtk_label_set_selectable(GTK_LABEL(name), TRUE);
 	gtk_label_set_line_wrap(GTK_LABEL(name), TRUE);
 	gtk_label_set_line_wrap_mode(GTK_LABEL(name), PANGO_WRAP_WORD_CHAR);
-	gtk_box_pack_start(GTK_BOX(hbox), name, FALSE, TRUE, 4);
+	gtk_label_set_max_width_chars(GTK_LABEL(name), 40);
+	gtk_box_pack_start(GTK_BOX(hbox), name, TRUE, TRUE, 4);
 
 	make_heading(name, PANGO_SCALE_X_LARGE);
 
@@ -270,26 +283,48 @@ static GtkWidget *make_vbox(const guchar *path, GObject *window)
 
 	if (access(help_dir, F_OK) == 0)
 	{
-		GtkWidget *button, *align;
+		GtkWidget *button;
 
-		align = gtk_alignment_new(0.5, 0.5, 0, 0);
-
-		button = button_new_mixed(GTK_STOCK_JUMP_TO,
+		button = button_new_mixed("go-jump",
 				_("Show _Help Files"));
-		gtk_box_pack_start(vbox, align, FALSE, TRUE, 0);
-		gtk_container_add(GTK_CONTAINER(align), button);
+		gtk_widget_set_hexpand(button, TRUE);
+		gtk_widget_set_halign(button, GTK_ALIGN_FILL);
+		gtk_box_pack_start(vbox, button, FALSE, TRUE, 0);
 		g_signal_connect_swapped(button, "clicked",
 				G_CALLBACK(show_help_files),
 				(gpointer) path);
 	}
 	g_free(help_dir);
 
+	/* Show active configuration folder, About only [20260808205923] */
+	if (about)
+	{
+		GtkWidget *button;
+		gchar *tip, *cfg;
+
+		button = button_new_mixed("go-jump",
+				_("Show _Configuration Files"));
+		gtk_widget_set_hexpand(button, TRUE);
+		gtk_widget_set_halign(button, GTK_ALIGN_FILL);
+		gtk_box_pack_start(vbox, button, FALSE, TRUE, 0);
+		cfg = choices_find_xdg_path_save("", project_name,
+						SITE, FALSE);
+		tip = g_strdup_printf("%s: %s", project_name,
+					cfg ? cfg : "");
+		gtk_widget_set_tooltip_text(button, tip);
+		g_free(tip);
+		g_free(cfg);
+		g_signal_connect(button, "clicked",
+				G_CALLBACK(show_config_folder), NULL);
+	}
+
 	if (!(item->flags & ITEM_FLAG_SYMLINK))
 	{
 		label = gtk_label_new(NULL);
 		gtk_label_set_markup(GTK_LABEL(label),
 				     _("<b>Permissions</b>"));
-		gtk_misc_set_alignment(GTK_MISC(label), 0, 1);
+		gtk_widget_set_halign(label, GTK_ALIGN_START);
+		gtk_widget_set_valign(label, GTK_ALIGN_END);
 		gtk_box_pack_start(vbox, label, FALSE, TRUE, 2);
 
 		gtk_box_pack_start(vbox, make_permissions(path, item),
@@ -307,7 +342,8 @@ static GtkWidget *make_vbox(const guchar *path, GObject *window)
 		label = gtk_label_new(NULL);
 		gtk_label_set_markup(GTK_LABEL(label),
 				_("<b>Contents indicate...</b>"));
-		gtk_misc_set_alignment(GTK_MISC(label), 0, 1);
+		gtk_widget_set_halign(label, GTK_ALIGN_START);
+		gtk_widget_set_valign(label, GTK_ALIGN_END);
 		gtk_box_pack_start(vbox, label, FALSE, TRUE, 2);
 
 		gtk_box_pack_start(vbox, make_file_says(path), TRUE, TRUE, 0);
@@ -317,7 +353,8 @@ static GtkWidget *make_vbox(const guchar *path, GObject *window)
 		label = gtk_label_new(NULL);
 		gtk_label_set_markup(GTK_LABEL(label),
 				     _("<b>When all directories are closed</b>"));
-		gtk_misc_set_alignment(GTK_MISC(label), 0, 1);
+		gtk_widget_set_halign(label, GTK_ALIGN_START);
+		gtk_widget_set_valign(label, GTK_ALIGN_END);
 		gtk_box_pack_start(vbox, label, FALSE, TRUE, 2);
 	    gtk_box_pack_start(vbox, make_unmount_options(path), FALSE, TRUE, 0);
 	}
@@ -413,6 +450,10 @@ static void make_list(GtkListStore **list_store, GtkWidget **list_view,
 			0, NULL, cell_renderer, "text", 0, NULL);
 
 	cell_renderer = gtk_cell_renderer_text_new();
+	g_object_set(G_OBJECT(cell_renderer),
+			"wrap-mode", PANGO_WRAP_WORD_CHAR,
+			"wrap-width", 350,
+			NULL);
 	gtk_tree_view_insert_column_with_attributes(view,
 			1, NULL, cell_renderer, "text", 1, "editable", 2, NULL);
 
@@ -563,7 +604,7 @@ static void cell_edited(GtkCellRendererText *cell,
 }
 
 /* Create the TreeView widget with the file's details */
-static GtkWidget *make_details(const guchar *path, DirItem *item,
+static GtkWidget *make_details(const gchar *path, DirItem *item,
 				GObject *window)
 {
 	GtkListStore	*store;
@@ -661,6 +702,28 @@ static GtkWidget *make_details(const guchar *path, DirItem *item,
 	if (item->mime_type)
 		add_row(store, "", mime_type_comment(item->mime_type));
 
+	/* Which file supplies this item's icon. [20261006083027] */
+	{
+		char *marker = NULL;
+		char *icon_path;
+
+		icon_path = type_icon_source_path(path, item, &marker);
+		if (icon_path)
+		{
+			if (marker)
+			{
+				gchar *with_marker;
+
+				with_marker = g_strconcat(icon_path, " ",
+						marker, NULL);
+				g_free(icon_path);
+				icon_path = with_marker;
+			}
+			add_row_and_free(store, _("Icon:"), icon_path);
+			g_free(marker);
+		}
+	}
+
 	if (xattr_supported(NULL)) {
 		add_row(store, _("Extended attributes:"),
 		  (item->flags & ITEM_FLAG_HAS_XATTR)
@@ -702,7 +765,7 @@ static GtkWidget *make_details(const guchar *path, DirItem *item,
 }
 
 /* Create the TreeView widget with the application's details */
-static GtkWidget *make_about(const guchar *path, XMLwrapper *ai)
+static GtkWidget *make_about(const gchar *path, XMLwrapper *ai)
 {
 	GtkListStore	*store;
 	GtkWidget	*view;
@@ -719,7 +782,7 @@ static GtkWidget *make_about(const guchar *path, XMLwrapper *ai)
 	{
 		if (about->type != XML_ELEMENT_NODE)
 			continue;
-		if (about->ns == NULL && strcmp(about->name, "About") == 0)
+		if (about->ns == NULL && xmlStrcmp(about->name, BAD_CAST "About") == 0)
 			break;
 	}
 
@@ -754,15 +817,15 @@ static GtkWidget *make_about(const guchar *path, XMLwrapper *ai)
 			if (!trans)
 				trans = prop;
 
-			tmp = xmlGetProp(trans, "label");
+			tmp = (gchar *) xmlGetProp(trans, BAD_CAST "label");
 			label = g_strconcat(tmp ? tmp
 						: (char *) trans->name,
 					    ":", NULL);
 			g_free(tmp);
-			value = xmlNodeListGetString(trans->doc,
+			value = (gchar *) xmlNodeListGetString(trans->doc,
 					   trans->xmlChildrenNode, 1);
 			if (!value)
-				value = xmlNodeListGetString(prop->doc,
+				value = (gchar *) xmlNodeListGetString(prop->doc,
 						prop->xmlChildrenNode, 1);
 			if (!value)
 				value = g_strdup("-");
@@ -809,19 +872,21 @@ static GtkWidget *make_about_desktop(const gchar *path)
 	return view;
 }
 
-static GtkWidget *make_file_says(const guchar *path)
+static GtkWidget *make_file_says(const gchar *path)
 {
 	GtkWidget	*w_file_label;
 	GtkLabel	*l_file_label;
 	int		file_data[2];
 	char 		*argv[] = {"file", "-b", NULL, NULL};
 	FileStatus 	*fs = NULL;
-	guchar 		*tmp;
+	gchar 		*tmp;
 	gchar		*base = NULL;
 
 	w_file_label = gtk_label_new(_("<nothing yet>"));
 	l_file_label = GTK_LABEL(w_file_label);
 	gtk_label_set_line_wrap(l_file_label, TRUE);
+	gtk_label_set_line_wrap_mode(l_file_label, PANGO_WRAP_WORD_CHAR);
+	gtk_label_set_max_width_chars(l_file_label, 40);
 	gtk_label_set_selectable(l_file_label, TRUE);
 
 	if (pipe(file_data))
@@ -865,9 +930,9 @@ static GtkWidget *make_file_says(const guchar *path)
 			fs->label = l_file_label;
 			fs->fd = file_data[0];
 			fs->text = g_strdup("");
-			fs->input = gdk_input_add_full(fs->fd, GDK_INPUT_READ,
-				(GdkInputFunction) add_file_output,
-				fs, NULL);
+		fs->input = g_io_add_watch(g_io_channel_unix_new(fs->fd),
+			G_IO_IN | G_IO_HUP | G_IO_ERR, add_file_output,
+			fs);
 			g_signal_connect(w_file_label, "destroy",
 				G_CALLBACK(file_info_destroyed), fs);
 			break;
@@ -877,24 +942,27 @@ static GtkWidget *make_file_says(const guchar *path)
 }
 
 /* Got some data from file(1) - stick it in the window. */
-static void add_file_output(FileStatus *fs,
-			    gint source, GdkInputCondition condition)
+static gboolean add_file_output(GIOChannel *source,
+			    GIOCondition condition, gpointer user_data)
 {
+	FileStatus *fs = (FileStatus *) user_data;
 	char	buffer[20];
 	char	*str;
 	int	got;
+	int	fd;
 
-	got = read(source, buffer, sizeof(buffer) - 1);
+	fd = g_io_channel_unix_get_fd(source);
+	got = read(fd, buffer, sizeof(buffer) - 1);
 	if (got <= 0)
 	{
 		int	err = errno;
 		g_source_remove(fs->input);
-		close(source);
+		close(fd);
 		fs->fd = -1;
 		if (got < 0)
 			delayed_error(_("file(1) says... %s"),
 					g_strerror(err));
-		return;
+		return FALSE;
 	}
 	buffer[got] = '\0';
 
@@ -906,6 +974,8 @@ static void add_file_output(FileStatus *fs,
 	g_strstrip(str);
 	gtk_label_set_text(fs->label, str);
 	g_free(str);
+
+	return TRUE;
 }
 
 static void file_info_destroyed(GtkWidget *widget, FileStatus *fs)
@@ -965,32 +1035,36 @@ static GtkWidget *make_permissions(const gchar *path, DirItem *item)
 	perm->path = g_strdup(path);
 	perm->item = diritem_new(path);
 
-	table = gtk_table_new(4, 5, TRUE);
+	table = gtk_grid_new();
+	gtk_grid_set_column_homogeneous(GTK_GRID(table), TRUE);
+	gtk_grid_set_row_homogeneous(GTK_GRID(table), TRUE);
 
 	label = gtk_label_new(_("Owner"));
-	gtk_table_attach_defaults(GTK_TABLE(table), label, 0, 1, 1, 2);
+	gtk_grid_attach(GTK_GRID(table), label, 0, 1, 1, 1);
 	label = gtk_label_new(_("Group"));
-	gtk_table_attach_defaults(GTK_TABLE(table), label, 0, 1, 2, 3);
+	gtk_grid_attach(GTK_GRID(table), label, 0, 2, 1, 1);
 	label = gtk_label_new(_("World"));
-	gtk_table_attach_defaults(GTK_TABLE(table), label, 0, 1, 3, 4);
+	gtk_grid_attach(GTK_GRID(table), label, 0, 3, 1, 1);
 
 	label = gtk_label_new(_("Read"));
-	gtk_misc_set_alignment(GTK_MISC(label), 0, 0.5);
-	gtk_table_attach_defaults(GTK_TABLE(table), label, 1, 2, 0, 1);
+	gtk_widget_set_halign(label, GTK_ALIGN_START);
+	gtk_widget_set_valign(label, GTK_ALIGN_CENTER);
+	gtk_grid_attach(GTK_GRID(table), label, 1, 0, 1, 1);
 	label = gtk_label_new(_("Write"));
-	gtk_misc_set_alignment(GTK_MISC(label), 0, 0.5);
-	gtk_table_attach_defaults(GTK_TABLE(table), label, 2, 3, 0, 1);
+	gtk_widget_set_halign(label, GTK_ALIGN_START);
+	gtk_widget_set_valign(label, GTK_ALIGN_CENTER);
+	gtk_grid_attach(GTK_GRID(table), label, 2, 0, 1, 1);
 	label = gtk_label_new(_("Exec"));
-	gtk_misc_set_alignment(GTK_MISC(label), 0, 0.5);
-	gtk_table_attach_defaults(GTK_TABLE(table), label, 3, 4, 0, 1);
+	gtk_widget_set_halign(label, GTK_ALIGN_START);
+	gtk_widget_set_valign(label, GTK_ALIGN_CENTER);
+	gtk_grid_attach(GTK_GRID(table), label, 3, 0, 1, 1);
 
 	for (i = 0; i < 9; i++)
 	{
 		x = 1 + 2 - i % 3;
 		y = 1 + 2 - i / 3;
 		perm->bits[i] = tick = gtk_check_button_new();
-		gtk_table_attach_defaults(GTK_TABLE(table), tick,
-					  x, x + 1, y, y + 1);
+		gtk_grid_attach(GTK_GRID(table), tick, x, y, 1, 1);
 		if (item->mode & (1 << i))
 			gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(tick),
 						     TRUE);
@@ -999,21 +1073,21 @@ static GtkWidget *make_permissions(const gchar *path, DirItem *item)
 	}
 
 	tick = gtk_check_button_new_with_label(_("SUID"));
-	gtk_table_attach_defaults(GTK_TABLE(table), tick, 4, 5, 1, 2);
+	gtk_grid_attach(GTK_GRID(table), tick, 4, 1, 1, 1);
 	if (item->mode & S_ISUID)
 		gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(tick), TRUE);
 	g_signal_connect(tick, "toggled", G_CALLBACK(permissions_apply), perm);
 	perm->bits[9] = tick;
 
 	tick = gtk_check_button_new_with_label(_("SGID"));
-	gtk_table_attach_defaults(GTK_TABLE(table), tick, 4, 5, 2, 3);
+	gtk_grid_attach(GTK_GRID(table), tick, 4, 2, 1, 1);
 	if (item->mode & S_ISGID)
 		gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(tick), TRUE);
 	g_signal_connect(tick, "toggled", G_CALLBACK(permissions_apply), perm);
 	perm->bits[10] = tick;
 
 	tick = gtk_check_button_new_with_label(_("Sticky"));
-	gtk_table_attach_defaults(GTK_TABLE(table), tick, 4, 5, 3, 4);
+	gtk_grid_attach(GTK_GRID(table), tick, 4, 3, 1, 1);
 	if (item->mode & S_ISVTX)
 		gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(tick), TRUE);
 	g_signal_connect(tick, "toggled", G_CALLBACK(permissions_apply), perm);
@@ -1066,7 +1140,8 @@ static GtkWidget *make_unmount_options(const char *path)
     GtkWidget *hbox, *radio;
     UnmountPrompt upval = filer_get_unmount_action(path);
 
-    hbox = gtk_hbox_new(TRUE, 4);
+    hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
+    gtk_box_set_homogeneous(GTK_BOX(hbox), TRUE);
     radio = pack_unmount_radio(path, upval,
             _("Do nothing"), UNMOUNT_PROMPT_NO_CHANGE, NULL, hbox);
     radio = pack_unmount_radio(path, upval,
@@ -1079,7 +1154,7 @@ static GtkWidget *make_unmount_options(const char *path)
 }
 
 /* Don't g_free() the result */
-static const gchar *pretty_type(DirItem *file, const guchar *path)
+static const gchar *pretty_type(DirItem *file, const gchar *path)
 {
 	static gchar *text = NULL;
 

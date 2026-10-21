@@ -13,8 +13,8 @@ typedef void (*FindFree)(FindCondition *condition);
 
 struct _FindInfo
 {
-	const guchar	*fullpath;
-	const guchar	*leaf;
+	const gchar	*fullpath;
+	const gchar	*leaf;
 	struct stat	stats;
 	time_t		now;
 	gboolean	prune;

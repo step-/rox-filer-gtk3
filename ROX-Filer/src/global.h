@@ -178,26 +178,35 @@ typedef enum
 } OpenFlags;
 
 /* The namespaces for the SOAP messages */
-#define SOAP_ENV_NS_OLD "http://www.w3.org/2001/06/soap-envelope"
-#define SOAP_ENV_NS "http://www.w3.org/2001/12/soap-envelope"
-#define SOAP_RPC_NS "http://www.w3.org/2001/12/soap-rpc"
-#define ROX_NS "http://rox.sourceforge.net/SOAP/ROX-Filer"
+#define SOAP_ENV_NS_OLD BAD_CAST "http://www.w3.org/2001/06/soap-envelope"
+#define SOAP_ENV_NS BAD_CAST "http://www.w3.org/2001/12/soap-envelope"
+#define SOAP_RPC_NS BAD_CAST "http://www.w3.org/2001/12/soap-rpc"
+#define ROX_NS BAD_CAST "http://rox.sourceforge.net/SOAP/ROX-Filer"
 
 /* Namespace for configuration */
 #define SITE "rox.sourceforge.net"
 
-/* Stock icons */
+/* theme icons (used to be stock icons in GTK2) */
 #define ROX_STOCK_SHOW_DETAILS "rox-show-details"
 #define ROX_STOCK_SHOW_HIDDEN  "rox-show-hidden"
 #define ROX_STOCK_MOUNT        "rox-mount"
 #define ROX_STOCK_MOUNTED      "rox-mounted"
 #define ROX_STOCK_XATTR        "rox-xattr"
 #define ROX_STOCK_SYMLINK      "rox-symlink"
+#define ROX_STOCK_UNKNOWN      "rox-unknown"
 
 /* Re-use an existing icon for a slightly different purpose */
-#define ROX_STOCK_BOOKMARKS    GTK_STOCK_JUMP_TO
+#define ROX_STOCK_BOOKMARKS    "rox-bookmarks"
 
 #define D(f, ...) g_print("#"#f"\n", __VA_ARGS__);
 #define DD(a) g_print("#"#a"\n");
+
+/* User-configurable project name for config isolation (set in main.c).
+ * Defaults to PROJECT ("ROX-Filer"). When overridden (via --namespace
+ * or ROX_FILER_NAMESPACE), all ROX-Filer-specific config paths use this
+ * name instead of PROJECT, and the IPC atom includes it to prevent
+ * cross-version interference.
+ */
+extern const char *project_name;
 
 #include <libxml/tree.h>

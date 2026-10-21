@@ -14,6 +14,18 @@
 #include <gdk/gdk.h>
 #include <gtk/gtkwidget.h>
 
+/* GdkFunction and its constants were removed in GTK3.
+ * These are used as logical enum values for lasso selection behavior.
+ */
+typedef enum {
+	GDK_COPY = 0,
+	GDK_INVERT,
+	GDK_XOR,
+	GDK_CLEAR,
+	GDK_NOOP,
+	GDK_SET,
+} GdkFunction;
+
 #ifdef __cplusplus
 extern "C" {
 #endif /* __cplusplus */
@@ -47,7 +59,8 @@ typedef void (*CollectionDrawFunc)(
 		int idx,
 		GdkRectangle *area,
 		gpointer user_data,
-		gboolean cursor);
+		gboolean cursor,
+		cairo_t *cr);
 
 typedef gboolean (*CollectionTestFunc)(
 		Collection *collection,
@@ -82,7 +95,6 @@ struct _Collection
 	gboolean	lasso_box;	/* Is the box drawn? */
 	int		drag_box_x[2];	/* Index 0 is the fixed corner */
 	int		drag_box_y[2];
-	GdkGC		*xor_gc;
 
 	CollectionItem	*items;
 	gint		cursor_item;		/* -1 if not shown */

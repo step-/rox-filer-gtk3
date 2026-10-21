@@ -19,7 +19,6 @@
 
 typedef struct _Radios Radios;
 
-extern GdkFont	   	*fixed_font;
 extern gint		screen_width, screen_height;
 
 /* Useful atoms (set by gui_support_init()) */ 
@@ -61,6 +60,8 @@ gboolean load_file(const char *pathname, char **data_out, long *length_out);
 GtkWidget *new_help_button(HelpFunc show_help, gpointer data);
 void parse_file(const char *path, ParseFunc *parse_line);
 gboolean get_pointer_xy(int *x, int *y);
+GdkWindow *gui_get_pointer(GdkWindow *relative_to,
+			   gint *x, gint *y, GdkModifierType *mask);
 int get_monitor_under_pointer(void);
 void centre_window(GdkWindow *window, int x, int y);
 void wink_widget(GtkWidget *widget);
@@ -71,9 +72,11 @@ GtkWidget *button_new_image_text(GtkWidget *image, const char *message);
 void entry_set_error(GtkWidget *entry, gboolean error);
 void window_put_just_above(GdkWindow *higher, GdkWindow *lower);
 void fixed_move_fast(GtkFixed *fixed, GtkWidget *widget, int x, int y);
-void tooltip_show(guchar *text);
+void tooltip_show(gchar *text);
 void tooltip_prime(GSourceFunc callback, GObject *object);
 void widget_modify_font(GtkWidget *widget, PangoFontDescription *font_desc);
+void widget_set_bg_color(GtkWidget *widget, const GdkRGBA *color);
+void widget_set_fg_color(GtkWidget *widget, const GdkRGBA *color);
 gboolean confirm(const gchar *message, const gchar *stock, const gchar *action);
 
 Radios *radios_new(void (*changed)(Radios *, gpointer data), gpointer data);
@@ -84,7 +87,7 @@ void radios_set_value(Radios *radios, gint value);
 gint radios_get_value(Radios *radios);
 GList *uri_list_to_glist(const char *uri_list);
 GtkWidget *simple_image_new(GdkPixbuf *pixbuf);
-void render_pixbuf(GdkPixbuf *pixbuf, GdkDrawable *target, GdkGC *gc,
+void render_pixbuf(GdkPixbuf *pixbuf, GdkWindow *target, cairo_t *cr,
 		   int x, int y, int width, int height);
 /* gdk_window_set_keep_below() only exists in GTK >= 2.4 and is broken until
  * 2.4.6 */
@@ -98,9 +101,28 @@ void make_heading(GtkWidget *label, double scale_factor);
 void launch_uri(GObject *button, const char *uri);
 void allow_right_click(GtkWidget *button);
 gint current_event_button(void);
-GdkPixbuf *create_spotlight_pixbuf(GdkPixbuf *src, GdkColor *color);
+GdkPixbuf *create_spotlight_pixbuf(GdkPixbuf *src, GdkRGBA *color);
+static inline GdkColor gdkrgba_to_gdkcolor(const GdkRGBA *rgba)
+{
+	GdkColor c;
+	c.red = (guint16)(CLAMP(rgba->red, 0.0, 1.0) * 65535);
+	c.green = (guint16)(CLAMP(rgba->green, 0.0, 1.0) * 65535);
+	c.blue = (guint16)(CLAMP(rgba->blue, 0.0, 1.0) * 65535);
+	c.pixel = 0;
+	return c;
+}
 GtkBuilder *get_gtk_builder(gchar **ids);
-void add_stock_to_menu_item(GtkWidget *item, const char *stock);
+GtkWidget *menu_item_new_with_image(const gchar *label, GtkWidget *image);
+GtkWidget *menu_item_new_with_image_mnemonic(const gchar *label,
+		GtkWidget *image);
+void menu_item_set_image(GtkWidget *item, GtkWidget *image);
+void rox_dialog_set_parent(GtkWidget *dialog);
+void rox_dialog_set_parent_full(GtkWidget *dialog,
+		gboolean destroy_with_parent);
+void rox_dialog_allow_exit(GtkWidget *dialog);
+void rox_dialog_block_exit(GtkWidget *dialog);
+void rox_dialog_note_modal(GtkWidget *dialog);
+GList *rox_exit_blockers(void);
 gchar get_mnemonic(gchar *text, gchar *assigned);
 gchar *add_mnemonic(gchar *text, gchar *assigned);
 #endif /* _GUI_SUPPORT_H */

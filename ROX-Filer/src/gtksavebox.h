@@ -65,8 +65,8 @@ struct _GtkSaveboxClass
 {
   GtkDialogClass parent_class;
 
-  gint (*save_to_file)	(GtkSavebox *savebox, guchar *pathname);
-  void (*saved_to_uri)	(GtkSavebox *savebox, guchar *uri);
+  gint (*save_to_file)	(GtkSavebox *savebox, gchar *pathname);
+  void (*saved_to_uri)	(GtkSavebox *savebox, gchar *uri);
 };
 
 

@@ -1,6 +1,7 @@
 /*
  * ROX-Filer, filer for the ROX desktop project
  * Copyright (C) 2006, Thomas Leonard and others (see changelog for details).
+ * Copyright (C) 2026, step <step.commons@gmail.com>.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the Free
@@ -64,7 +65,7 @@ static const char *process_globicons_line(gchar *line);
 static gboolean free_globicon(gpointer key, gpointer value, gpointer data);
 static void write_globicons(void);
 static void drag_icon_dropped(GtkWidget	*drop_box,
-				  const guchar	*path,
+				  const gchar	*path,
 				  GtkWidget	*dialog);
 static gboolean set_icon_for_type(MIME_type *type, const gchar *iconpath,
 				  gboolean just_media);
@@ -80,13 +81,13 @@ void read_globicons()
 {
 	static time_t last_read = (time_t) 0;
 	struct stat info;
-	guchar *path;
+	gchar *path;
 	xmlDocPtr doc;
 
 	if (!glob_icons)
 		glob_icons = g_hash_table_new(g_str_hash, g_str_equal);
 
-	path = choices_find_xdg_path_load("globicons", PROJECT, SITE);
+	path = choices_find_xdg_path_load("globicons", project_name, SITE);
 	if (!path)
 		return;	/* Nothing to load */
 
@@ -109,22 +110,22 @@ void read_globicons()
 		/* Handle the new XML file format */
 		for (node = root->xmlChildrenNode; node; node = node->next)
 		{
-			gchar *path, *icon_path;
+			gchar *p, *icon_path;
 
 			if (node->type != XML_ELEMENT_NODE)
 				continue;
-			if (strcmp(node->name, "rule") != 0)
+			if (xmlStrcmp(node->name, BAD_CAST "rule") != 0)
 				continue;
-			icon = get_subnode(node, NULL, "icon");
+			icon = get_subnode(node, NULL, BAD_CAST "icon");
 			if (!icon)
 				continue;
-			match = xmlGetProp(node, "match");
+			match = (gchar *) xmlGetProp(node, BAD_CAST "match");
 			if (!match)
 				continue;
 
-			icon_path = xmlNodeGetContent(icon);
-			path = expand_path(match);
-			g_hash_table_insert(glob_icons, path, icon_path);
+			icon_path = (gchar *) xmlNodeGetContent(icon);
+			p = expand_path(match);
+			g_hash_table_insert(glob_icons, p, icon_path);
 			g_free(match);
 		}
 
@@ -146,7 +147,7 @@ out:
 /* Set an item's image field according to the globicons patterns if
  * it matches one of them and the file exists.
  */
-void check_globicon(const guchar *path, DirItem *item)
+void check_globicon(const gchar *path, DirItem *item)
 {
 	gchar *gi;
 
@@ -156,7 +157,7 @@ void check_globicon(const guchar *path, DirItem *item)
 	if (gi)
 		item->_image = g_fscache_lookup(pixmap_cache, gi);
 }
-MaskedPixmap *get_globicon(const guchar *path)
+MaskedPixmap *get_globicon(const gchar *path)
 {
 	gchar *gi;
 
@@ -166,7 +167,19 @@ MaskedPixmap *get_globicon(const guchar *path)
 	return NULL;
 }
 
-static gboolean create_diricon(const guchar *filepath, const guchar *iconpath)
+/* As get_globicon(), but report the icon file instead of loading it, so
+ * the caller can show where the icon came from. Returns a newly allocated
+ * path, or NULL if this path has no user-assigned icon.  [20261006083027]
+ */
+gchar *get_globicon_path(const gchar *path)
+{
+	gchar *gi;
+
+	gi = g_hash_table_lookup(glob_icons, path);
+	return gi ? g_strdup(gi) : NULL;
+}
+
+static gboolean create_diricon(const gchar *filepath, const gchar *iconpath)
 {
 	if (!convert_to_png(iconpath, make_path(filepath, ".DirIcon")))
 		return FALSE;
@@ -178,7 +191,7 @@ static gboolean create_diricon(const guchar *filepath, const guchar *iconpath)
 }
 
 /* Add a globicon mapping for the given file to the given icon path */
-static gboolean set_icon_path(const guchar *filepath, const guchar *iconpath)
+static gboolean set_icon_path(const gchar *filepath, const gchar *iconpath)
 {
 	MaskedPixmap *pic;
 
@@ -217,7 +230,7 @@ static void dialog_response(GtkWidget *dialog, gint response, gpointer data)
 static void clear_icon(DropBox *drop_box, GObject *dialog)
 {
 	Radios *radios;
-	const guchar *pathname;
+	const gchar *pathname;
 
 	pathname = g_object_get_data(G_OBJECT(dialog), "pathname");
 	g_return_if_fail(pathname != NULL);
@@ -231,8 +244,8 @@ static void clear_icon(DropBox *drop_box, GObject *dialog)
 	}
 	else
 	{
-		const guchar *path;
-		guchar *tmp;
+		const gchar *path;
+		gchar *tmp;
 		DropBox *drop_box;
 
 		drop_box = g_object_get_data(G_OBJECT(dialog), "rox-dropbox");
@@ -242,7 +255,7 @@ static void clear_icon(DropBox *drop_box, GObject *dialog)
 		g_return_if_fail(path != NULL);
 
 		tmp = g_strdup_printf(_("Really delete icon '%s'?"), path);
-		if (confirm(tmp, GTK_STOCK_DELETE, NULL))
+		if (confirm(tmp, "edit-delete", _("_Delete")))
 		{
 			if (unlink(path))
 				delayed_error(_("Can't delete '%s':\n%s"),
@@ -263,11 +276,11 @@ static void clear_icon(DropBox *drop_box, GObject *dialog)
 /* Display a dialog box allowing the user to set the icon for
  * a file or directory.
  */
-void icon_set_handler_dialog(DirItem *item, const guchar *path)
+void icon_set_handler_dialog(DirItem *item, const gchar *path)
 {
 	struct stat	info;
 	GtkDialog	*dialog;
-	GtkWidget	*frame;
+	GtkWidget	*frame, *button;
 	Radios		*radios;
 
 	g_return_if_fail(item != NULL && path != NULL);
@@ -329,20 +342,24 @@ void icon_set_handler_dialog(DirItem *item, const guchar *path)
 	g_object_set_data(G_OBJECT(dialog), "rox-dropbox", frame);
 
 	/* Make sure rox-dropbox is set before packing (calls changed) */
-	radios_pack(radios, GTK_BOX(dialog->vbox));
-	gtk_box_pack_start(GTK_BOX(dialog->vbox), frame, TRUE, TRUE, 4);
+	radios_pack(radios, GTK_BOX(gtk_dialog_get_content_area(dialog)));
+	gtk_box_pack_start(GTK_BOX(gtk_dialog_get_content_area(dialog)), frame, TRUE, TRUE, 4);
 
 	g_signal_connect(frame, "path_dropped",
 			G_CALLBACK(drag_icon_dropped), dialog);
 	g_signal_connect(frame, "clear",
 			G_CALLBACK(clear_icon), dialog);
 
-	gtk_dialog_add_buttons(dialog,
-			GTK_STOCK_CLOSE, GTK_RESPONSE_OK,
-			NULL);
+	button = button_new_mixed("window-close", _("_Close"));
+	gtk_widget_set_can_default(button, TRUE);
+	gtk_dialog_add_action_widget(dialog, button, GTK_RESPONSE_OK);
 	g_signal_connect(dialog, "response", G_CALLBACK(dialog_response), NULL);
 	gtk_dialog_set_default_response(dialog, GTK_RESPONSE_OK);
 
+	rox_dialog_set_parent_full(GTK_WIDGET(dialog), FALSE);
+	number_of_windows++;
+	g_signal_connect(dialog, "destroy",
+			G_CALLBACK(one_less_window), NULL);
 	gtk_widget_show_all(GTK_WIDGET(dialog));
 }
 
@@ -357,7 +374,7 @@ static void radios_changed(Radios *radios, gpointer data)
 {
 	GObject *dialog = G_OBJECT(data);
 	DropBox *drop_box;
-	const guchar *path;
+	const gchar *path;
 	MIME_type *mime_type;
 
 	path = g_object_get_data(dialog, "pathname");
@@ -432,9 +449,9 @@ static void write_globicon(gpointer key, gpointer value, gpointer data)
 	xmlNodePtr doc = (xmlNodePtr) data;
 	xmlNodePtr tree;
 
-	tree = xmlNewTextChild(doc, NULL, "rule", NULL);
-	xmlSetProp(tree, "match", key);
-	xmlNewTextChild(tree, NULL, "icon", value);
+	tree = xmlNewTextChild(doc, NULL, BAD_CAST "rule", NULL);
+	xmlSetProp(tree, BAD_CAST "match", (const xmlChar *) key);
+	xmlNewTextChild(tree, NULL, BAD_CAST "icon", (const xmlChar *) value);
 }
 
 /* Write globicons file */
@@ -443,16 +460,16 @@ static void write_globicons(void)
 	gchar *save = NULL, *save_new = NULL;
 	xmlDocPtr doc = NULL;
 
-	save = choices_find_xdg_path_save("globicons", PROJECT, SITE, TRUE);
+	save = choices_find_xdg_path_save("globicons", project_name, SITE, TRUE);
 
 	if (!save)
 		return;		/* Saving is disabled */
 
 	save_new = g_strconcat(save, ".new", NULL);
 
-	doc = xmlNewDoc("1.0");
+	doc = xmlNewDoc(BAD_CAST "1.0");
 	xmlDocSetRootElement(doc,
-		             xmlNewDocNode(doc, NULL, "special-files", NULL));
+		             xmlNewDocNode(doc, NULL, BAD_CAST "special-files", NULL));
 
 	g_hash_table_foreach(glob_icons, write_globicon,
 			     xmlDocGetRootElement(doc));
@@ -477,7 +494,7 @@ static void write_globicons(void)
 */
 static const char *process_globicons_line(gchar *line)
 {
-	guchar *pattern, *iconpath;
+	gchar *pattern, *iconpath;
 
 	pattern = strtok(line, " \t");
 	/* We ignore empty lines, but they are no cause for a message */
@@ -548,7 +565,7 @@ void delete_globicon(const gchar *path)
 /* Set the icon for this dialog's file to 'icon' */
 static void do_set_icon(GtkWidget *dialog, const gchar *icon)
 {
-	guchar  *path = NULL;
+	gchar  *path = NULL;
 	Radios *radios;
 	int op;
 
@@ -588,7 +605,7 @@ static void do_set_icon(GtkWidget *dialog, const gchar *icon)
  * dialog. Make that the default icon.
  */
 static void drag_icon_dropped(GtkWidget	*drop_box,
-			      const guchar *path,
+			      const gchar *path,
 			      GtkWidget	*dialog)
 {
 	do_set_icon(dialog, path);

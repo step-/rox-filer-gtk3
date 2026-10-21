@@ -312,7 +312,7 @@
                                 <property name="visible">True</property>
                                 <property name="can_focus">False</property>
                                 <property name="events">GDK_POINTER_MOTION_MASK | GDK_POINTER_MOTION_HINT_MASK | GDK_BUTTON_PRESS_MASK | GDK_BUTTON_RELEASE_MASK</property>
-                                <property name="label" translatable="yes">Panel width</property>
+                                <property name="label" translatable="yes">Panel thickness</property>
                               </object>
                               <packing>
                                 <property name="expand">False</property>
@@ -325,7 +325,7 @@
                                 <property name="visible">True</property>
                                 <property name="can_focus">True</property>
                                 <property name="events">GDK_POINTER_MOTION_MASK | GDK_POINTER_MOTION_HINT_MASK | GDK_BUTTON_PRESS_MASK | GDK_BUTTON_RELEASE_MASK</property>
-                                <property name="tooltip_text" translatable="yes">The size of this panel.</property>
+                                <property name="tooltip_text" translatable="yes">How far the panel extends inward from the screen edge.</property>
                                 <property name="adjustment">adjustment1</property>
                                 <signal name="value-changed" handler="panel_width_changed_cb" object="adjustment1" swapped="no"/>
                               </object>
@@ -380,7 +380,7 @@
                                 <property name="visible">True</property>
                                 <property name="can_focus">True</property>
                                 <property name="events">GDK_POINTER_MOTION_MASK | GDK_POINTER_MOTION_HINT_MASK | GDK_BUTTON_PRESS_MASK | GDK_BUTTON_RELEASE_MASK</property>
-                                <property name="tooltip_text" translatable="yes">This depends on your environment. Basically if your windows had shadows, then you'll get transparent view.</property>
+                                <property name="tooltip_text" translatable="yes">This depends on your environment. Basically if your windows have shadows, then the panel can be transparent.</property>
                                 <property name="adjustment">adjustment3</property>
                                 <signal name="value-changed" handler="panel_transparency_changed_cb" object="adjustment3" swapped="no"/>
                               </object>
@@ -412,6 +412,25 @@
                           </packing>
                         </child>
                         <child>
+                          <object class="GtkCheckButton" id="panel_show_edge">
+                            <property name="label" translatable="yes">Show panel edge</property>
+                            <property name="visible">True</property>
+                            <property name="can_focus">True</property>
+                            <property name="receives_default">False</property>
+                            <property name="events">GDK_POINTER_MOTION_MASK | GDK_POINTER_MOTION_HINT_MASK | GDK_BUTTON_PRESS_MASK | GDK_BUTTON_RELEASE_MASK</property>
+                            <property name="tooltip_text" translatable="yes">Show thin divider along the inner edge of the panel.</property>
+                            <property name="use_action_appearance">False</property>
+                            <property name="draw_indicator">True</property>
+                            <signal name="toggled" handler="panel_show_edge_toggled_cb" swapped="no"/>
+                          </object>
+                          <packing>
+                            <property name="expand">True</property>
+                            <property name="fill">True</property>
+                            <property name="padding">4</property>
+                            <property name="position">3</property>
+                          </packing>
+                        </child>
+                        <child>
                           <object class="GtkCheckButton" id="panel_avoid">
                             <property name="label" translatable="yes">Do not cover panel</property>
                             <property name="visible">True</property>
@@ -427,7 +446,7 @@
                             <property name="expand">True</property>
                             <property name="fill">True</property>
                             <property name="padding">4</property>
-                            <property name="position">3</property>
+                            <property name="position">4</property>
                           </packing>
                         </child>
                       </object>
@@ -682,7 +701,7 @@
   </object>
   <object class="GtkAdjustment" id="adjustment1">
     <property name="lower">16</property>
-    <property name="upper">96</property>
+    <property name="upper">256</property>
     <property name="value">32</property>
     <property name="step_increment">1</property>
   </object>

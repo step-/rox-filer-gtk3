@@ -1,6 +1,7 @@
 /*
  * ROX-Filer, filer for the ROX desktop project
  * Copyright (C) 2006, Thomas Leonard and others (see changelog for details).
+ * Copyright (C) 2026, step <step.commons@gmail.com>.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the Free
@@ -33,6 +34,7 @@
 #include "cell_icon.h"
 #include "filer.h"
 #include "display.h"
+#include "view_utils.h"
 #include "diritem.h"
 #include "pixmaps.h"
 #include "type.h"
@@ -47,7 +49,7 @@ struct _CellIcon {
 
 	ViewDetails *view_details;
 	ViewItem *item;
-	GdkColor background;
+	GdkRGBA background;
 };
 
 struct _CellIconClass {
@@ -62,18 +64,17 @@ static void cell_icon_init       (CellIcon *cell);
 static void cell_icon_class_init (CellIconClass *class);
 static void cell_icon_get_size   (GtkCellRenderer	*cell,
 				      GtkWidget		*widget,
-				      GdkRectangle	*rectangle,
+				      const GdkRectangle	*rectangle,
 				      gint		*x_offset,
 				      gint		*y_offset,
 				      gint		*width,
 				      gint		*height);
 static void cell_icon_render     (GtkCellRenderer		*cell,
-				      GdkWindow		*window,
+				      cairo_t		*cr,
 				      GtkWidget		*widget,
-				      GdkRectangle	*background_area,
-				      GdkRectangle	*cell_area,
-				      GdkRectangle	*expose_area,
-				      guint		flags);
+				      const GdkRectangle	*background_area,
+				      const GdkRectangle	*cell_area,
+				      GtkCellRendererState	flags);
 static GType cell_icon_get_type(void);
 
 enum {
@@ -154,8 +155,8 @@ static void cell_icon_class_init(CellIconClass *class)
 			PROP_BACKGROUND_GDK,
 			g_param_spec_boxed("background_gdk",
 				"Background color",
-				"Background color as a GdkColor",
-				GDK_TYPE_COLOR,
+				"Background color as a GdkRGBA",
+				GDK_TYPE_RGBA,
 				G_PARAM_WRITABLE));
 }
 
@@ -171,13 +172,9 @@ static void cell_icon_set_property(GObject *object, guint param_id,
 			break;
 		case PROP_BACKGROUND_GDK:
 		{
-			GdkColor *bg = g_value_get_boxed(value);
+			GdkRGBA *bg = g_value_get_boxed(value);
 			if (bg)
-			{
-				icon->background.red = bg->red;
-				icon->background.green = bg->green;
-				icon->background.blue = bg->blue;
-			}
+				icon->background = *bg;
 			break;
 		}
 		default:
@@ -234,7 +231,7 @@ static DisplayStyle get_style(GtkCellRenderer *cell)
 
 static void cell_icon_get_size(GtkCellRenderer *cell,
 				   GtkWidget       *widget,
-				   GdkRectangle    *cell_area,
+				   const GdkRectangle *cell_area,
 				   gint            *x_offset,
 				   gint            *y_offset,
 				   gint            *width,
@@ -313,20 +310,20 @@ static void cell_icon_get_size(GtkCellRenderer *cell,
 }
 
 static void cell_icon_render(GtkCellRenderer    *cell,
-			     GdkWindow		*window,
+			     cairo_t		*cr,
 			     GtkWidget		*widget,
-			     GdkRectangle	*background_area,
-			     GdkRectangle	*cell_area,
-			     GdkRectangle	*expose_area,
-			     guint		flags)
+			     const GdkRectangle	*background_area,
+			     const GdkRectangle	*cell_area,
+			     GtkCellRendererState	flags)
 {
 	CellIcon *icon = (CellIcon *) cell;
 	ViewItem *view_item = icon->item;
 	DirItem *item = view_item->item;
 	DisplayStyle size;
 	gboolean selected = (flags & GTK_CELL_RENDERER_SELECTED) != 0;
-	GdkColor *color;
 	FilerWindow  *fw = icon->view_details->filer_window;
+	GtkStyleContext *ctx;
+	GdkRGBA bg_color;
 
 	g_return_if_fail(view_item != NULL);
 
@@ -337,23 +334,32 @@ static void cell_icon_render(GtkCellRenderer    *cell,
 	if (!image && !sendi)
 		return;
 
-	color = &widget->style->base[fw->selection_state];
+	ctx = gtk_widget_get_style_context(widget);
+	{
+		GtkStateFlags sf = (fw->selection_state == GTK_STATE_SELECTED)
+				? GTK_STATE_FLAG_SELECTED : GTK_STATE_FLAG_ACTIVE;
+		view_utils_get_selection_color(ctx, sf, &bg_color);
+	}
 
 	/* Draw the icon */
 	GdkRectangle area = *cell_area;
 
+	if (size == SMALL_ICONS)
+	{
+		area.width = MIN(area.width, small_width);
+		area.x = cell_area->x + cell_area->width - area.width;
+
+		area.height = MIN(area.height, small_height);
+		area.y = cell_area->y + (cell_area->height - area.height) / 2;
+	}
+
+	int scale_factor = gtk_widget_get_scale_factor(widget);
+
 	if (!sendi)
 	{
-
 		switch (size) {
 		case SMALL_ICONS:
 		{
-			area.width = MIN(area.width, small_width);
-			area.x = cell_area->x + cell_area->width - area.width;
-
-			area.height = MIN(area.height, small_height);
-			area.y = cell_area->y + (cell_area->height - area.height) / 2;
-
 			if (!image->sm_pixbuf)
 				pixmap_make_small(image);
 
@@ -361,7 +367,12 @@ static void cell_icon_render(GtkCellRenderer    *cell,
 			break;
 		}
 		case LARGE_ICONS:
-			sendi =image->pixbuf;
+			/* On HiDPI prefer the source-resolution pixbuf so
+			 * draw_huge_icon can render at physical pixels.
+			 */
+			sendi = scale_factor > 1
+					? image->src_pixbuf
+					: image->pixbuf;
 			break;
 		case HUGE_ICONS:
 			sendi =image->src_pixbuf;
@@ -372,6 +383,7 @@ static void cell_icon_render(GtkCellRenderer    *cell,
 		}
 	}
 
-	draw_huge_icon(window, widget->style, &area, item,
-			sendi, selected, color);
+	draw_huge_icon(cr, &area, item,
+			sendi, selected, &bg_color,
+			scale_factor);
 }

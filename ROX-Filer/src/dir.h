@@ -103,7 +103,7 @@ void dir_attach(Directory *dir, DirCallback callback, gpointer data);
 void dir_detach(Directory *dir, DirCallback callback, gpointer data);
 void dir_update(Directory *dir, gchar *pathname);
 void refresh_dirs(const char *path);
-void dir_check_this(const guchar *path);
+void dir_check_this(const gchar *path);
 DirItem *dir_update_item(Directory *dir, const gchar *leafname);
 void dir_merge_new(Directory *dir);
 void dir_force_update_path(const gchar *path, gboolean icon);

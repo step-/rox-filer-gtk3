@@ -1,6 +1,7 @@
 /*
  * ROX-Filer, filer for the ROX desktop project
  * Copyright (C) 2006, Thomas Leonard and others (see changelog for details).
+ * Copyright (C) 2026, step <step.commons@gmail.com>.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the Free
@@ -33,24 +34,12 @@
 #include "gdk/gdkkeysyms.h"
 
 #include "gtksavebox.h"
-#include "gtk/gtkwidget.h"
-#include "gtk/gtkalignment.h"
-#include "gtk/gtkdnd.h"
-#include "gtk/gtkbutton.h"
-#include "gtk/gtksignal.h"
-#include "gtk/gtkhbox.h"
-#include "gtk/gtkeventbox.h"
-#include "gtk/gtkentry.h"
-#include "gtk/gtkmessagedialog.h"
-#include "gtk/gtkhseparator.h"
-#include "gtk/gtkvbox.h"
-#include "gtk/gtkdialog.h"
-#include "gtk/gtklabel.h"
-#include "gtk/gtkstock.h"
-
 #include "global.h"
 #include "support.h"
 #include "gui_support.h"
+
+/* dnd.c; dnd.h is not included here (conflicting statics) */
+void dnd_shape_drag_icon(GdkDragContext *context, GdkPixbuf *pixbuf);
 
 /*
  * Behaviour:
@@ -128,10 +117,10 @@ static void drag_data_get	   (GtkWidget	      *widget,
 				    GtkSelectionData  *selection_data,
 				    guint	      info,
 				    guint32	      time);
-static guchar *read_xds_property   (GdkDragContext    *context,
+static gchar *read_xds_property   (GdkDragContext    *context,
 				    gboolean	      delete);
 static void write_xds_property	   (GdkDragContext    *context,
-				    const guchar      *value);
+				    const gchar      *value);
 static void drag_end 		   (GtkWidget 	      *widget,
 				    GdkDragContext    *context);
 static void gtk_savebox_response   (GtkDialog	      *savebox,
@@ -236,7 +225,7 @@ gtk_savebox_class_init (GtkSaveboxClass *class)
 static void
 gtk_savebox_init (GtkSavebox *savebox)
 {
-  GtkWidget *alignment, *button;
+  GtkWidget *button;
   GtkDialog *dialog = (GtkDialog *) savebox;
   GtkTargetEntry targets[] = { {"XdndDirectSave0", 0, GTK_TARGET_XDS} };
 
@@ -248,10 +237,10 @@ gtk_savebox_init (GtkSavebox *savebox)
 
   gtk_window_set_title (GTK_WINDOW (savebox), _("Save As:"));
   gtk_window_set_position (GTK_WINDOW (savebox), GTK_WIN_POS_MOUSE);
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
   gtk_window_set_wmclass (GTK_WINDOW (savebox), "savebox", "Savebox");
-
-  alignment = gtk_alignment_new (0.5, 0.5, 0, 0);
-  gtk_box_pack_start (GTK_BOX (dialog->vbox), alignment, TRUE, TRUE, 0);
+#pragma GCC diagnostic pop
 
   savebox->drag_box = gtk_event_box_new ();
   gtk_container_set_border_width (GTK_CONTAINER (savebox->drag_box), 4);
@@ -262,27 +251,30 @@ gtk_savebox_init (GtkSavebox *savebox)
 		      G_CALLBACK (drag_end), savebox);
   g_signal_connect (savebox, "drag_data_get",
 		      G_CALLBACK (drag_data_get), savebox);
-  gtk_container_add (GTK_CONTAINER (alignment), savebox->drag_box);
+  gtk_box_pack_start (GTK_BOX (gtk_dialog_get_content_area(dialog)),
+		      savebox->drag_box, TRUE, TRUE, 0);
 
   savebox->entry = gtk_entry_new ();
   g_signal_connect_swapped (savebox->entry, "activate",
 			     G_CALLBACK (do_save), savebox);
-  gtk_box_pack_start (GTK_BOX (dialog->vbox), savebox->entry, FALSE, TRUE, 4);
+  gtk_box_pack_start (GTK_BOX (gtk_dialog_get_content_area(dialog)),
+		      savebox->entry, FALSE, TRUE, 4);
 
-  gtk_widget_show_all (dialog->vbox);
+  gtk_widget_show_all (gtk_dialog_get_content_area(dialog));
   gtk_widget_grab_focus (savebox->entry);
 
-  savebox->discard_area = gtk_hbutton_box_new();
+  savebox->discard_area = gtk_button_box_new(GTK_ORIENTATION_HORIZONTAL);
 
-  button = button_new_mixed (GTK_STOCK_DELETE, "_Discard");
+  button = button_new_mixed ("edit-delete", "_Discard");
   gtk_box_pack_start (GTK_BOX (savebox->discard_area), button, FALSE, TRUE, 2);
   g_signal_connect (button, "clicked", G_CALLBACK (discard_clicked), savebox);
   gtk_widget_set_can_focus(button, FALSE);
   gtk_widget_set_can_default(button, TRUE);
 
-  gtk_box_pack_end (GTK_BOX (dialog->vbox), savebox->discard_area,
-		      FALSE, TRUE, 0);
-  gtk_box_reorder_child (GTK_BOX (dialog->vbox), savebox->discard_area, 0);
+  gtk_box_pack_end (GTK_BOX (gtk_dialog_get_content_area(dialog)),
+		      savebox->discard_area, FALSE, TRUE, 0);
+  gtk_box_reorder_child (GTK_BOX (gtk_dialog_get_content_area(dialog)),
+			 savebox->discard_area, 0);
 
   savebox->dnd_action = GDK_ACTION_COPY;
 }
@@ -300,24 +292,22 @@ GtkWidget*
 gtk_savebox_new (const gchar *action)
 {
   GtkWidget *button;
+  GtkWidget *cancel_button;
   GtkDialog *dialog;
-  GList	    *list, *next;
 
   dialog = GTK_DIALOG (gtk_widget_new (gtk_savebox_get_type(), NULL));
 
-  gtk_dialog_add_button (dialog, GTK_STOCK_CANCEL, GTK_RESPONSE_CANCEL);
+  cancel_button = button_new_mixed("gtk-cancel", _("_Cancel"));
+  gtk_dialog_add_action_widget (dialog, cancel_button, GTK_RESPONSE_CANCEL);
+  gtk_widget_set_can_focus(cancel_button, FALSE);
 
-  button = button_new_mixed (GTK_STOCK_SAVE, action);
+  button = button_new_mixed ("document-save", action);
   gtk_widget_set_can_default(button, TRUE);
+  gtk_widget_set_can_focus(button, FALSE);
   gtk_widget_show (button);
   gtk_dialog_add_action_widget (dialog, button, GTK_RESPONSE_OK);
 
   gtk_dialog_set_default_response (dialog, GTK_RESPONSE_OK);
-
-  list = gtk_container_get_children (GTK_CONTAINER (dialog->action_area));
-  for (next = list; next; next = next->next)
-    gtk_widget_set_can_focus(GTK_WIDGET(next->data), FALSE);
-  g_list_free(list);
 
   return GTK_WIDGET(dialog);
 }
@@ -379,7 +369,10 @@ button_press_over_icon (GtkWidget *drag_box, GdkEventButton *event,
 {
   GdkDragContext  *context;
   const gchar	  *uri = NULL, *leafname;
-  gchar			  *base = NULL;
+  gchar		  *base = NULL;
+  GdkPixbuf	  *pixbuf;
+  GtkAllocation alloc;
+  gint		  width, height, scale, box_x, box_y, hot_x, hot_y;
 
   g_return_if_fail (savebox != NULL);
   g_return_if_fail (GTK_IS_SAVEBOX (savebox));
@@ -388,9 +381,9 @@ button_press_over_icon (GtkWidget *drag_box, GdkEventButton *event,
 
   savebox->using_xds = FALSE;
   savebox->data_sent = FALSE;
-  context = gtk_drag_begin (GTK_WIDGET (savebox),
+  context = gtk_drag_begin_with_coordinates (GTK_WIDGET (savebox),
 			    savebox->targets, savebox->dnd_action,
-			    event->button, (GdkEvent *) event);
+			    event->button, (GdkEvent *) event, -1, -1);
 
   uri = gtk_entry_get_text (GTK_ENTRY (savebox->entry));
   if (uri && *uri) {
@@ -402,9 +395,36 @@ button_press_over_icon (GtkWidget *drag_box, GdkEventButton *event,
 
   write_xds_property (context, leafname);
   g_free(base);
-  gtk_drag_set_icon_pixbuf (context,
-			    gtk_image_get_pixbuf (GTK_IMAGE (savebox->icon)),
-			    event->x, event->y);
+
+  /* The button coordinates are relative to the drag box, which spans the
+   * full dialog. The hotspot must index the small drag pixmap. The
+   * centered-aligned image is never realigned. The hotspot wants pixbuf
+   * pixels, i.e. widget pixels × widget scale factor. [20261011220217]
+   */
+  pixbuf = gtk_image_get_pixbuf (GTK_IMAGE (savebox->icon));
+  width = gdk_pixbuf_get_width (pixbuf);
+  height = gdk_pixbuf_get_height (pixbuf);
+  scale = gtk_widget_get_scale_factor (savebox->icon);
+  gtk_widget_get_allocation (savebox->icon, &alloc);
+  if (gtk_widget_translate_coordinates (drag_box, savebox->icon,
+					(gint) event->x, (gint) event->y,
+					&box_x, &box_y))
+  {
+    hot_x = (gint) ((box_x - (alloc.width - width / scale) * 0.5)
+		    * scale);
+    hot_y = (gint) ((box_y - (alloc.height - height / scale) * 0.5)
+		    * scale);
+  }
+  else
+  {
+    hot_x = 0;
+    hot_y = 0;
+  }
+  hot_x = CLAMP (hot_x, 0, width - 1);
+  hot_y = CLAMP (hot_y, 0, height - 1);
+
+  gtk_drag_set_icon_pixbuf (context, pixbuf, hot_x, hot_y);
+  dnd_shape_drag_icon (context, pixbuf);
 
 }
 
@@ -416,7 +436,7 @@ drag_data_get (GtkWidget	*widget,
                guint32          time)
 {
   GtkSavebox  *savebox;
-  guchar      to_send = 'E';
+  gchar      to_send = 'E';
   gchar	      *uri;
   gchar       *pathname;
 
@@ -480,22 +500,23 @@ drag_data_get (GtkWidget	*widget,
 
   if (to_send != 'E')
     savebox->using_xds = TRUE;
-  gtk_selection_data_set (selection_data, xa_string, 8, &to_send, 1);
+  gtk_selection_data_set (selection_data, xa_string, 8, (const guchar *) &to_send, 1);
 }
 
 /* Result is a UTF-8 encoded path. Not escaped. g_free() the result. */
-static guchar *
+static gchar *
 read_xds_property (GdkDragContext *context, gboolean delete)
 {
-  guchar  *prop_text;
-  guint	  length;
-  guchar  *retval = NULL;
+  gchar  *prop_text;
+  gint	  length;
+  gchar  *retval = NULL;
 
   g_return_val_if_fail (context != NULL, NULL);
 
-  if (gdk_property_get (context->source_window, XdndDirectSave, text_plain,
+  if (gdk_property_get (gdk_drag_context_get_source_window(context),
+		       XdndDirectSave, text_plain,
 		       0, XDS_MAXURILEN, delete,
-		       NULL, NULL, &length, &prop_text)
+		       NULL, NULL, &length, (guchar **) &prop_text)
 	    && prop_text)
   {
     /* Terminate the string */
@@ -509,7 +530,7 @@ read_xds_property (GdkDragContext *context, gboolean delete)
 }
 
 static void
-write_xds_property (GdkDragContext *context, const guchar *value)
+write_xds_property (GdkDragContext *context, const gchar *value)
 {
   /* XXX: Should set character set to UTF-8 here. Spec says default is
    * ISO-8859-1!
@@ -517,12 +538,14 @@ write_xds_property (GdkDragContext *context, const guchar *value)
 
   if (value)
     {
-      gdk_property_change (context->source_window, XdndDirectSave,
+      gdk_property_change (gdk_drag_context_get_source_window(context),
+			   XdndDirectSave,
 			   text_plain, 8, GDK_PROP_MODE_REPLACE,
-			   value, strlen (value));
+			   (const guchar *) value, strlen (value));
     }
   else
-    gdk_property_delete (context->source_window, XdndDirectSave);
+    gdk_property_delete (gdk_drag_context_get_source_window(context),
+			 XdndDirectSave);
 }
 
 static void drag_end (GtkWidget *widget, GdkDragContext *context)
@@ -533,7 +556,7 @@ static void drag_end (GtkWidget *widget, GdkDragContext *context)
 
   if (GTK_SAVEBOX (widget)->using_xds)
     {
-      guchar  *uri;
+      gchar  *uri;
       uri = read_xds_property (context, TRUE);
 
       if (uri)

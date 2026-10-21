@@ -1,6 +1,7 @@
 /*
  * ROX-Filer, filer for the ROX desktop project
  * Copyright (C) 2006, Thomas Leonard and others (see changelog for details).
+ * Copyright (C) 2026, step <step.commons@gmail.com>.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the Free
@@ -113,7 +114,7 @@ void display_init()
 	option_add_int(&o_display_inherit_options,
 		       "display_inherit_options", FALSE);
 	option_add_int(&o_display_sort_by, "display_sort_by", SORT_NAME);
-	option_add_int(&o_display_show_hidden, "display_show_hidden", TRUE);
+	option_add_int(&o_display_show_hidden, "display_show_hidden", FALSE);
 	option_add_int(&o_enable_dot_hidden_file, "enable_dot_hidden_file", FALSE);
 	option_add_int(&o_xattr_show, "xattr_show", TRUE);
 	option_add_string(&o_time_format, "time_format", COMPACT_TIME_FORMAT);
@@ -128,7 +129,7 @@ void display_init()
 	option_add_int(&o_wrap_by_char, "wrap_by_char", FALSE);
 	option_add_int(&o_small_width, "display_small_width", 160);
 
-	option_add_int(&o_view_alpha, "view_alpha", 22);
+	option_add_int(&o_view_alpha, "view_alpha", 0);
 
 	option_add_int(&o_vertical_order_small, "vertical_order_small", TRUE);
 	option_add_int(&o_vertical_order_large, "vertical_order_large", FALSE);
@@ -136,7 +137,7 @@ void display_init()
 	option_add_int(&o_display_show_full_type, "display_show_full_type", FALSE);
 
 	option_add_int(&o_display_show_thumbs, "display_show_thumbs", FALSE);
-	option_add_int(&o_display_show_dir_thumbs, "display_show_dir_thumbs", TRUE);
+	option_add_int(&o_display_show_dir_thumbs, "display_show_dir_thumbs", FALSE);
 
 	option_add_int(&o_use_background_colour, "use_background_colour", FALSE);
 	option_add_string(&o_background_colour, "background_colour", "#000000");
@@ -161,122 +162,75 @@ void display_init()
 	huge_size = o_huge_size.int_value;
 }
 
-void draw_emblem_on_icon(GdkWindow *window, GtkStyle   *style,
+static void paint_emblem(cairo_t *cr, GdkPixbuf *pixbuf,
+		int x, int y, int size, int scale_factor)
+{
+	cairo_save(cr);
+	cairo_scale(cr, 1.0 / scale_factor, 1.0 / scale_factor);
+	gdk_cairo_set_source_pixbuf(cr, pixbuf,
+			x * scale_factor, y * scale_factor);
+	cairo_paint(cr);
+	cairo_restore(cr);
+}
+
+void draw_emblem_on_icon(cairo_t *cr,
 				const char *stock_id,
 				int *x, int y,
-				GdkColor *colour)
+				GdkRGBA *colour, int scale_factor)
 {
-	GtkIconSet *icon_set;
-	GdkPixbuf  *pixbuf, *ctemp;
+	GdkPixbuf  *pixbuf;
 
-	icon_set = gtk_style_lookup_icon_set(style,
-					     stock_id);
-	if (icon_set)
-	{
-		pixbuf = gtk_icon_set_render_icon(icon_set,
-						  style,
-						  GTK_TEXT_DIR_LTR,
-						  GTK_STATE_NORMAL,
-						  mount_icon_size,
-						  NULL,
-						  NULL);
-	}
-	else
-	{
-		pixbuf=im_unknown->pixbuf;
-		g_object_ref(pixbuf);
-	}
+	pixbuf = pixmaps_get_emblem_scaled(stock_id,
+					ROX_EMBLEM_SIZE, scale_factor);
 
 	if (colour)
 	{
-		pixbuf = create_spotlight_pixbuf(ctemp = pixbuf, colour);
+		GdkPixbuf *ctemp = pixbuf;
+
+		pixbuf = create_spotlight_pixbuf(ctemp, colour);
 		g_object_unref(ctemp);
 	}
 
-	cairo_t *cr = gdk_cairo_create(window);
-	gdk_cairo_set_source_pixbuf(cr, pixbuf, *x, y);
-	cairo_paint(cr);
-	cairo_destroy(cr);
+	paint_emblem(cr, pixbuf, *x, y, ROX_EMBLEM_SIZE, scale_factor);
 
-	*x+=gdk_pixbuf_get_width(pixbuf)+1;
+	*x += ROX_EMBLEM_SIZE + 1;
 	g_object_unref(pixbuf);
 }
 
 static void draw_mini_emblem_on_icon(cairo_t *cr,
-		GtkStyle *style, const char *stock_id,
-		int *x, int y, int areah, GdkColor *colour)
+		const char *stock_id,
+		int *x, int y, int areah, GdkRGBA *colour, int scale_factor)
 {
-	GtkIconSet *icon_set;
-	static GdkPixbuf  *pixbuf, *ctemp, *scaled = NULL;
-	static char *bs_id = NULL;
-	static int w, h, tsize, dy, dx;
-	static gboolean coloured = FALSE;
+	GdkPixbuf  *pixbuf;
+	int tsize, dy, dx;
 
-	/* there are full of sym emblem */
-	if (!bs_id || strcmp(bs_id, stock_id) != 0 || coloured)
+	tsize = areah * 4 / 5;
+	if (tsize > ROX_EMBLEM_SIZE)
+		tsize = ROX_EMBLEM_SIZE;
+	dy = areah - tsize;
+
+	pixbuf = pixmaps_get_emblem_scaled(stock_id, tsize, scale_factor);
+
+	if (colour)
 	{
-		coloured = colour != NULL;
+		GdkPixbuf *ctemp = pixbuf;
 
-		g_free(bs_id);
-		bs_id = g_strdup(stock_id);
-		if (scaled)
-			g_object_unref(scaled);
-
-		icon_set = gtk_style_lookup_icon_set(style,
-							 stock_id);
-		if (icon_set)
-		{
-			pixbuf = gtk_icon_set_render_icon(icon_set,
-							  style,
-							  GTK_TEXT_DIR_LTR,
-							  GTK_STATE_NORMAL,
-							  mount_icon_size,
-							  NULL,
-							  NULL);
-		}
-		else
-		{
-			pixbuf=im_unknown->pixbuf;
-			g_object_ref(pixbuf);
-		}
-
-		if (colour)
-		{
-			pixbuf = create_spotlight_pixbuf(ctemp = pixbuf, colour);
-			g_object_unref(ctemp);
-		}
-
-		dy = areah * 1 / 5;
-		tsize = areah * 4 / 5;
-		dy += areah - (dy + tsize);
-		gtk_icon_size_lookup(mount_icon_size, &w, &h);
-		if (h < tsize)
-		{
-			dy += tsize - h;
-			scaled = pixbuf;
-		}
-		else
-		{
-			scaled = gdk_pixbuf_scale_simple(pixbuf,
-						tsize, tsize, GDK_INTERP_TILES);
-
-			g_object_unref(pixbuf);
-		}
-		dx = gdk_pixbuf_get_width(scaled);
+		pixbuf = create_spotlight_pixbuf(ctemp, colour);
+		g_object_unref(ctemp);
 	}
 
-	gdk_cairo_set_source_pixbuf(cr, scaled, *x - 1, y + dy + 1);
-	cairo_paint(cr);
+	paint_emblem(cr, pixbuf, *x - 1, y + dy + 1, tsize, scale_factor);
+
+	dx = tsize;
+	g_object_unref(pixbuf);
 
 	*x += dx * 2 / 3;
 }
 
-static void draw_noimage(GdkWindow *window, GdkRectangle *rect)
+static void draw_noimage(cairo_t *cr, GdkRectangle *rect)
 {
-	cairo_t *cr;
 	GdkRectangle dr;
 
-	cr = gdk_cairo_create(window);
 	cairo_set_operator(cr, CAIRO_OPERATOR_SOURCE);
 
 	dr.x      = rect->x + rect->width / 6;
@@ -298,19 +252,18 @@ static void draw_noimage(GdkWindow *window, GdkRectangle *rect)
 	cairo_stroke(cr);
 
 	cairo_pattern_destroy(linpat);
-	cairo_destroy(cr);
 }
 
 static void draw_label_bg(cairo_t *cr,
 			GdkRectangle *rect,
-			GdkColor *colour)
+			GdkRGBA *colour)
 {
 	GdkRectangle drect;
 	int b, h;
 
 	if (!colour) return;
 
-	gdk_cairo_set_source_color(cr, colour);
+	gdk_cairo_set_source_rgba(cr, colour);
 
 	drect.x      = rect->x;
 	drect.width  = rect->width;
@@ -334,20 +287,20 @@ static void draw_label_bg(cairo_t *cr,
  * given rectangle.
  */
 void draw_huge_icon(
-			GdkWindow *window,
-			GtkStyle *style,
+			cairo_t *cr,
 			GdkRectangle *area,
 			DirItem  *item,
 			GdkPixbuf *image,
 			gboolean selected,
-			GdkColor *colour
+			GdkRGBA *colour,
+			int scale_factor
 ) {
-	int       image_x, image_y, width, height, mw, mh;
+	int       image_x, image_y, width, height;
 	GdkPixbuf *pixbuf, *scaled = NULL;
 	gfloat    scale, ws, hs;
 
 	if (!image)
-		return draw_noimage(window, area);
+		return draw_noimage(cr, area);
 
 	width = gdk_pixbuf_get_width(image);
 	height = gdk_pixbuf_get_height(image);
@@ -373,46 +326,75 @@ void draw_huge_icon(
 	image_x = area->x + ((area->width - width) >> 1);
 	image_y = area->y + MAX(0, (area->height - height) / 2);
 
-	cairo_t *cr = gdk_cairo_create(window);
-
 	draw_label_bg(cr, area,
 			selected && item->label ? colour : item->label);
 
-	 pixbuf = selected
-			? create_spotlight_pixbuf(scaled, colour)
-			: scaled;
+	if (scale_factor > 1 && width > 0 && height > 0)
+	{
+		/* HiDPI: render at physical pixels from the source-resolution
+		 * pixbuf instead of letting Cairo stretch a pre-scaled one.
+		 */
+		int phys_w = width * scale_factor;
+		int phys_h = height * scale_factor;
 
-	gdk_cairo_set_source_pixbuf(cr, pixbuf, image_x, image_y);
-	cairo_paint(cr);
+		scaled = gdk_pixbuf_scale_simple(image,
+					phys_w, phys_h, GDK_INTERP_BILINEAR);
+		pixbuf = selected
+				? create_spotlight_pixbuf(scaled, colour)
+				: scaled;
 
-	if (scale != 1.0 && width > 0 && height > 0)
+		cairo_save(cr);
+		cairo_scale(cr, 1.0 / scale_factor, 1.0 / scale_factor);
+		gdk_cairo_set_source_pixbuf(cr, pixbuf,
+				image_x * scale_factor,
+				image_y * scale_factor);
+		cairo_paint(cr);
+		cairo_restore(cr);
+
+		if (selected)
+			g_object_unref(pixbuf);
 		g_object_unref(scaled);
+	}
+	else
+	{
+		pixbuf = selected
+				? create_spotlight_pixbuf(scaled, colour)
+				: scaled;
 
-	if (selected)
-		g_object_unref(pixbuf);
+		gdk_cairo_set_source_pixbuf(cr, pixbuf, image_x, image_y);
+		cairo_paint(cr);
 
-	gtk_icon_size_lookup(mount_icon_size, &mw, &mh);
+		if (scale != 1.0 && width > 0 && height > 0)
+			g_object_unref(scaled);
+
+		if (selected)
+			g_object_unref(pixbuf);
+	}
 
 	image_x = area->x;
-	if (area->width < mw * 2 && area->height < mh * 2)
+	if (area->width < ROX_EMBLEM_SIZE * 2 &&
+	    area->height < ROX_EMBLEM_SIZE * 2)
 	{
 		if (item->flags & ITEM_FLAG_MOUNT_POINT)
 		{
 			const char *mp = item->flags & ITEM_FLAG_MOUNTED
 						? ROX_STOCK_MOUNTED
 						: ROX_STOCK_MOUNT;
-			draw_mini_emblem_on_icon(cr, style, mp,
-						&image_x, area->y, area->height, NULL);
+			draw_mini_emblem_on_icon(cr, mp,
+						&image_x, area->y, area->height, NULL,
+						scale_factor);
 		}
 		if (item->flags & ITEM_FLAG_SYMLINK)
 		{
-			draw_mini_emblem_on_icon(cr, style, ROX_STOCK_SYMLINK,
-						&image_x, area->y, area->height, NULL);
+			draw_mini_emblem_on_icon(cr, ROX_STOCK_SYMLINK,
+						&image_x, area->y, area->height, NULL,
+						scale_factor);
 		}
 		if ((item->flags & ITEM_FLAG_HAS_XATTR) && o_xattr_show.int_value)
 		{
-			draw_mini_emblem_on_icon(cr, style, ROX_STOCK_XATTR,
-						&image_x, area->y, area->height, item->label);
+			draw_mini_emblem_on_icon(cr, ROX_STOCK_XATTR,
+						&image_x, area->y, area->height,
+						item->label, scale_factor);
 		}
 	}
 	else if (area->width <= ICON_WIDTH && area->height <= ICON_HEIGHT)
@@ -422,18 +404,21 @@ void draw_huge_icon(
 			const char *mp = item->flags & ITEM_FLAG_MOUNTED
 						? ROX_STOCK_MOUNTED
 						: ROX_STOCK_MOUNT;
-			draw_emblem_on_icon(window, style, mp,
-						&image_x, area->y + 2, NULL);
+			draw_emblem_on_icon(cr, mp,
+						&image_x, area->y + 2, NULL,
+						scale_factor);
 		}
 		if (item->flags & ITEM_FLAG_SYMLINK)
 		{
-			draw_emblem_on_icon(window, style, ROX_STOCK_SYMLINK,
-						&image_x, area->y + 2, NULL);
+			draw_emblem_on_icon(cr, ROX_STOCK_SYMLINK,
+						&image_x, area->y + 2, NULL,
+						scale_factor);
 		}
 		if ((item->flags & ITEM_FLAG_HAS_XATTR) && o_xattr_show.int_value)
 		{
-			draw_emblem_on_icon(window, style, ROX_STOCK_XATTR,
-						&image_x, area->y + 2, item->label);
+			draw_emblem_on_icon(cr, ROX_STOCK_XATTR,
+						&image_x, area->y + 2, item->label,
+						scale_factor);
 		}
 	}
 	else
@@ -447,22 +432,23 @@ void draw_huge_icon(
 			const char *mp = item->flags & ITEM_FLAG_MOUNTED
 						? ROX_STOCK_MOUNTED
 						: ROX_STOCK_MOUNT;
-			draw_emblem_on_icon(window, style, mp,
-						&image_x, emb_y + height / 19, NULL);
+			draw_emblem_on_icon(cr, mp,
+						&image_x, emb_y + height / 19, NULL,
+						scale_factor);
 		}
 		if (item->flags & ITEM_FLAG_SYMLINK)
 		{
-			draw_emblem_on_icon(window, style, ROX_STOCK_SYMLINK,
-						&image_x, emb_y + height / 19, NULL);
+			draw_emblem_on_icon(cr, ROX_STOCK_SYMLINK,
+						&image_x, emb_y + height / 19, NULL,
+						scale_factor);
 		}
 		if ((item->flags & ITEM_FLAG_HAS_XATTR) && o_xattr_show.int_value)
 		{
-			draw_emblem_on_icon(window, style, ROX_STOCK_XATTR,
-						&image_x, emb_y + height / 19, item->label);
+			draw_emblem_on_icon(cr, ROX_STOCK_XATTR,
+						&image_x, emb_y + height / 19,
+						item->label, scale_factor);
 		}
 	}
-
-	cairo_destroy(cr);
 }
 
 /* The sort functions aren't called from outside, but they are
@@ -669,8 +655,8 @@ void display_set_layout(FilerWindow *fw,
 			DetailsType  details,
 			gboolean     force_resize)
 {
-	gdk_window_set_cursor(fw->window->window, busy_cursor);
-	gdk_flush();
+	gdk_window_set_cursor(gtk_widget_get_window(GTK_WIDGET(fw->window)), busy_cursor);
+	gdk_display_flush(gdk_display_get_default());
 
 	gboolean details_changed = fw->details_type != details;
 	gboolean wanted_changed = details_changed || fw->display_style_wanted != want;
@@ -713,7 +699,7 @@ void display_set_layout(FilerWindow *fw,
 		g_free(size_label);
 	}
 
-	gdk_window_set_cursor(fw->window->window, NULL);
+	gdk_window_set_cursor(gtk_widget_get_window(GTK_WIDGET(fw->window)), NULL);
 }
 
 /* Set the 'Show Thumbnails' flag for this window */
@@ -792,8 +778,36 @@ void display_set_autoselect(FilerWindow *filer_window, const gchar *leaf)
 
 	null_g_free(&filer_window->auto_select);
 
+	/* A -s request (open_to_show) sets wink_after_select so the target
+	 * item gets a focus indicator AND is winked. For a fresh window the
+	 * view may already contain the item (cached directory) before the
+	 * window's keyboard cursor is established, in which case
+	 * view_autoselect() would only wink it. Establish the cursor first
+	 * so autoselect moves the indicator onto the requested item, then
+	 * wink it below. Only the -s path sets the flag, so other autoselect
+	 * callers are unaffected.
+	 */
+	if (filer_window->wink_after_select &&
+			!view_cursor_visible(filer_window->view))
+		view_show_cursor(filer_window->view);
+
 	if (view_autoselect(filer_window->view, new))
+	{
+		/* A -s request (open_to_show) sets wink_after_select so the
+		 * selected item is also winked, after the focus indicator has
+		 * been placed on it. Only the -s path sets the flag, so other
+		 * autoselect callers are unaffected.
+		 */
+		if (filer_window->wink_after_select)
+		{
+			ViewIter iter;
+			view_get_cursor(filer_window->view, &iter);
+			if (iter.peek(&iter))
+				view_wink_item(filer_window->view, &iter);
+			filer_window->wink_after_select = FALSE;
+		}
 		g_free(new);
+	}
 	else
 		filer_window->auto_select = new;
 }
@@ -947,7 +961,7 @@ static char *getdetails(FilerWindow *filer_window,
 		DirItem *item, ViewData *view, gboolean sizeonly)
 {
 	mode_t	m = item->mode;
-	guchar 	*buf = NULL;
+	gchar 	*buf = NULL;
 	gboolean scanned = item->base_type != TYPE_UNKNOWN;
 	gboolean vertical = filer_window->display_style == HUGE_ICONS;
 
@@ -983,7 +997,7 @@ static char *getdetails(FilerWindow *filer_window,
 	}
 	else if (filer_window->details_type == DETAILS_TIMES)
 	{
-		guchar	*ctime, *mtime, *atime;
+		gchar	*ctime, *mtime, *atime;
 
 		ctime = pretty_time(&item->ctime);
 		mtime = pretty_time(&item->mtime);

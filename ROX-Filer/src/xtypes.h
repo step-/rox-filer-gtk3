@@ -34,10 +34,10 @@ MIME_type *xtype_get(const char *path);
 int xtype_set(const char *path, const MIME_type *type);
 
 /* Label support */
-GdkColor *xlabel_get(const char *);
+GdkRGBA *xlabel_get(const char *);
 
 /* Xattr browser */
-void xattrs_browser(DirItem *, const guchar *);
+void xattrs_browser(DirItem *, const gchar *);
 GArray* xattr_list(const char *);
 GArray* copy_array(GArray *);
 GArray* compare_arrays(GArray *,GArray *);

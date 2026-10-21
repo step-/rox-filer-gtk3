@@ -605,28 +605,37 @@ Affiche le premier/dernier objet du dossier.
 <row>
  <entry>
   Immobiliser la souris au-dessus d'un objet
- </entry>
- <entry>
+ </entry></row>
+ <row><entry>
   Affiche une bulle d'aide avec une description rapide de l'application (si une description est fournie),
   avec la cible d'un lien symbolique, ou avec le nom complet d'un objet, si celui-ci est trop long pour
   être affiché en entier.
- </entry>
-</row>
+ </entry></row>
+
+<row><entry><keycap>Maj</keycap>+<keycap>Menu</keycap></entry><entry>
+  Ouvre le menu <guimenu>Envoyer vers...</guimenu> de l'élément
+  sélectionné (voir la section <xref linkend="SendTo"/>).
+ </entry></row>
+
+ <row><entry><keycap>Maj</keycap>+<keycap>F10</keycap></entry><entry>
+  Ouvre le menu <guimenu>Envoyer vers...</guimenu> de l'élément
+  sélectionné (voir la section <xref linkend="SendTo"/>).
+ </entry></row>
+
+ <row><entry><keycap>Maj</keycap>+<keycap>|</keycap></entry><entry>
+  Ouvre le menu <guimenu>Envoyer vers...</guimenu> de l'élément
+  sélectionné (voir la section <xref linkend="SendTo"/>).
+ </entry></row>
 
 </tbody></tgroup></informaltable>
 
-  <para>
-	  Si vous avez activé la possibilité de définir les touches de raccourcis-clavier, alors 
-      celles-ci peuvent facilement être choisies en ouvrant le menu (ndt : le menu qui contient 
-	  la commande qui doit être exécutée lorsque vous utiliserez le raccourci-clavier), en 
-	  positionnant le pointeur de la souris au-dessus de la commande désirée, et en pressant la 
-	  (les) touche(s) devant servir de raccourci.
-	  La (les) touche(s) apparaît(ssent) maintenant dans le menu et peut(vent) désormais être utilisée(s)
-	  comme raccourci(s).
-	  Les touches de raccourcis sont automatiquement sauvées quand le <foreignphrase lang="en">filer</foreignphrase> est quitté.
-	  Vous pouvez utiliser un 'XSettings manager' tel que ROX-Session pour activer cette fonction pour
-	  toutes les applications Gtk+-2.0.
-  </para>
+ <para>
+  Pour définir un raccourci clavier personnalisé pour une entrée de menu, ouvrez la boîte
+  de dialogue Raccourcis clavier depuis la section Menus de la fenêtre Options. Naviguez dans
+  la structure des menus jusqu'à l'élément souhaité, double-cliquez sur la cellule Raccourci
+  et appuyez sur la combinaison de touches. Pour supprimer un raccourci clavier, double-cliquez
+  sur la cellule et appuyez sur <keycap>Retour arrière</keycap>.
+ </para>
 </chapter>
 
 <chapter id="selection">

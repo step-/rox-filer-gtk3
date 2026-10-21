@@ -1,0 +1,16 @@
+[Icon Theme]
+Name=ROX-Filer
+Comment=ROX-Filer toolbar and emblem icons
+Directories=scalable/apps,48x48/emblems
+
+[scalable/apps]
+MinSize=1
+Size=128
+MaxSize=256
+Context=Applications
+Type=Scalable
+
+[48x48/emblems]
+Size=48
+Context=Emblems
+Type=Threshold

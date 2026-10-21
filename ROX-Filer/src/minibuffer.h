@@ -8,6 +8,13 @@
 
 #include <gtk/gtk.h>
 
+#include "options.h"
+
+/* [20260911061827] Bare digit starts Reg Select and Alt+digit goes to
+ * numbered group directory while TRUE; default FALSE keeps classic bindings.
+ */
+extern Option o_group_digits_modifier;
+
 void minibuffer_init(void);
 void create_minibuffer(FilerWindow *filer_window);
 void minibuffer_show(FilerWindow *filer_window, MiniType mini_type, guint keyval);

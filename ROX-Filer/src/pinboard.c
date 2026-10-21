@@ -1,6 +1,7 @@
 /*
  * ROX-Filer, filer for the ROX desktop project
  * Copyright (C) 2006, Thomas Leonard and others (see changelog for details).
+ * Copyright (C) 2026, step <step.commons@gmail.com>.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the Free
@@ -27,6 +28,7 @@
 #include <errno.h>
 #include <gtk/gtk.h>
 #include <gdk/gdkx.h>
+#include <cairo-xlib.h>
 #include <stdlib.h>
 #include <math.h>
 #include <libxml/parser.h>
@@ -47,6 +49,7 @@
 #include "bind.h"
 #include "icon.h"
 #include "run.h"
+#include "view_utils.h"
 #include "appinfo.h"
 #include "menu.h"
 #include "xml.h"
@@ -60,9 +63,8 @@ static gboolean tmp_icon_selected = FALSE;		/* When dragging */
 static GtkWidget *set_backdrop_dialog = NULL;
 
 struct _Pinboard {
-	guchar		*name;		/* Leaf name */
+	gchar		*name;		/* Leaf name */
 	GList		*icons;
-	GtkStyle	*style;
 
 	gchar		*backdrop;	/* Pathname */
 	BackdropStyle	backdrop_style;
@@ -73,7 +75,6 @@ struct _Pinboard {
 
 	GtkWidget	*window;	/* Screen-sized window */
 	GtkWidget	*fixed;
-	GdkGC		*shadow_gc;
 };
 
 #define IS_PIN_ICON(obj) G_TYPE_CHECK_INSTANCE_TYPE((obj), pin_icon_get_type())
@@ -120,10 +121,11 @@ static PinIcon	*current_wink_icon = NULL;
 static gint	wink_timeout;
 
 /* Used for the text colours (only) in the icons */
-GdkColor pin_text_fg_col, pin_text_bg_col;
+GdkRGBA pin_text_fg_col, pin_text_bg_col;
+GdkRGBA pin_label_bg_col;
 PangoFontDescription *pinboard_font = NULL; /* NULL => Gtk default */
 
-static GdkColor pin_text_shadow_col;
+static GdkRGBA pin_text_shadow_col;
 
 Pinboard	*current_pinboard = NULL;
 static gint	loading_pinboard = 0;		/* Non-zero => loading */
@@ -145,6 +147,7 @@ static Option o_pinboard_fg_colour, o_pinboard_bg_colour;
 static Option o_pinboard_tasklist, o_forward_buttons_13;
 static Option o_iconify_start, o_iconify_dir;
 static Option o_label_font, o_pinboard_shadow_colour;
+static Option o_pinboard_label_bg_colour, o_pinboard_label_bg_transparency;
 static Option o_pinboard_shadow_labels;
 static Option o_blackbox_hack;
 
@@ -154,7 +157,7 @@ static Option o_pinboard_image_scaling;
 /* Static prototypes */
 static GType pin_icon_get_type(void);
 static void set_size_and_style(PinIcon *pi);
-static gint draw_icon(GtkWidget *widget, GdkEventExpose *event, PinIcon *pi);
+static gint draw_icon(GtkWidget *widget, cairo_t *cr, PinIcon *pi);
 static gint end_wink(gpointer data);
 static gboolean button_release_event(GtkWidget *widget,
 			    	     GdkEventButton *event,
@@ -197,8 +200,8 @@ static gboolean bg_drag_leave(GtkWidget		*widget,
 			      GdkDragContext	*context,
 			      guint32		time,
 			      gpointer		data);
-static gboolean bg_expose(GtkWidget *window,
-			  GdkEventExpose *event, gpointer data);
+static gboolean bg_draw(GtkWidget *window,
+			  cairo_t *cr, gpointer data);
 static void drag_end(GtkWidget *widget,
 			GdkDragContext *context,
 			PinIcon *pi);
@@ -216,10 +219,10 @@ static void reload_backdrop(Pinboard *pinboard,
 			    const gchar *backdrop,
 			    BackdropStyle backdrop_style);
 static void pinboard_reshape_icon(Icon *icon);
-static gint draw_wink(GtkWidget *widget, GdkEventExpose *event, PinIcon *pi);
+static gint draw_wink(GtkWidget *widget, cairo_t *cr, PinIcon *pi);
 static void abandon_backdrop_app(Pinboard *pinboard);
 static void drag_backdrop_dropped(GtkWidget	*drop_box,
-				  const guchar	*path,
+				  const gchar	*path,
 				  GtkWidget	*dialog);
 static void backdrop_response(GtkWidget *dialog, gint response, gpointer data);
 static void find_free_rect(Pinboard *pinboard, GdkRectangle *rect,
@@ -232,6 +235,14 @@ static void radios_changed(Radios *radios, gpointer data);
 static void update_radios(GtkWidget *dialog);
 static void pinboard_set_backdrop_box(void);
 
+/* MenuCB-shaped entry point, so the filer menu can reach the backdrop dialog
+ * without pinboard.c exposing its internals. [20261008152442]
+ */
+void pinboard_show_backdrop_box(gpointer data, guint action, GtkWidget *widget)
+{
+	pinboard_set_backdrop_box();
+}
+
 /****************************************************************
  *			EXTERNAL INTERFACE			*
  ****************************************************************/
@@ -243,6 +254,8 @@ void pinboard_init(void)
 	option_add_string(&o_pinboard_shadow_colour, "pinboard_shadow_colour",
 			"#000");
 	option_add_string(&o_label_font, "label_font", "");
+	option_add_string(&o_pinboard_label_bg_colour, "pinboard_label_bg_colour", "#F9F06B");
+	option_add_int(&o_pinboard_label_bg_transparency, "pinboard_label_bg_transparency", 85);
 	option_add_int(&o_pinboard_shadow_labels, "pinboard_shadow_labels", 1);
 
 	option_add_int(&o_pinboard_clamp_icons, "pinboard_clamp_icons", 1);
@@ -267,12 +280,15 @@ void pinboard_init(void)
 
 	option_add_notify(pinboard_check_options);
 
-	gdk_color_parse(o_pinboard_fg_colour.value, &pin_text_fg_col);
-	gdk_color_parse(o_pinboard_bg_colour.value, &pin_text_bg_col);
-	gdk_color_parse(o_pinboard_shadow_colour.value, &pin_text_shadow_col);
+	gdk_rgba_parse(&pin_text_fg_col, o_pinboard_fg_colour.value);
+	gdk_rgba_parse(&pin_text_bg_col, o_pinboard_bg_colour.value);
+	gdk_rgba_parse(&pin_text_shadow_col, o_pinboard_shadow_colour.value);
+	gdk_rgba_parse(&pin_label_bg_col, o_pinboard_label_bg_colour.value);
+	pin_label_bg_col.alpha =
+		(100 - o_pinboard_label_bg_transparency.int_value) / 100.0f;
 	update_pinboard_font();
 
-	placed_icons=g_hash_table_new(g_str_hash, g_str_equal);
+	placed_icons=g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
 }
 
 /* Load 'pb_<pinboard>' config file from Choices (if it exists)
@@ -284,7 +300,7 @@ void pinboard_init(void)
 void pinboard_activate(const gchar *name)
 {
 	Pinboard	*old_board = current_pinboard;
-	guchar		*path, *slash;
+	gchar		*path, *slash;
 
 	/* Treat an empty name the same as NULL */
 	if (name && !*name)
@@ -315,10 +331,10 @@ void pinboard_activate(const gchar *name)
 	}
 	else
 	{
-		guchar	*leaf;
+		gchar	*leaf;
 
 		leaf = g_strconcat("pb_", name, NULL);
-		path = choices_find_xdg_path_load(leaf, PROJECT, SITE);
+		path = choices_find_xdg_path_load(leaf, project_name, SITE);
 		g_free(leaf);
 	}
 
@@ -374,7 +390,7 @@ void pinboard_activate(const gchar *name)
 GdkWindow *pinboard_get_window(void)
 {
 	if (current_pinboard)
-		return current_pinboard->window->window;
+		return gtk_widget_get_window(current_pinboard->window);
 	return NULL;
 }
 
@@ -398,7 +414,7 @@ void pinboard_add_widget(GtkWidget *widget, const gchar *name)
 
 	gtk_fixed_put(GTK_FIXED(current_pinboard->fixed), widget, 0, 0);
 
-	gtk_widget_size_request(widget, &req);
+	gtk_widget_get_preferred_size(widget, NULL, &req);
 
 	if(name) {
 		rect=g_hash_table_lookup(placed_icons, name);
@@ -426,10 +442,16 @@ void pinboard_add_widget(GtkWidget *widget, const gchar *name)
 	gtk_fixed_move(GTK_FIXED(current_pinboard->fixed),
 			widget, rect->x, rect->y);
 
-	/* Store the new position (key and value are never freed) */
-	if(name)
-		g_hash_table_insert(placed_icons, g_strdup(name),
-				    rect);
+	/* Store a fresh copy — hash_table_new_full with g_free
+	 * destructors would free the old value on replacement,
+	 * and rect may point to the now-freed old entry.
+	 */
+	if (name)
+	{
+		GdkRectangle *copy = g_new(GdkRectangle, 1);
+		*copy = *rect;
+		g_hash_table_insert(placed_icons, g_strdup(name), copy);
+	}
 }
 
 void pinboard_moved_widget(GtkWidget *widget, const gchar *name,
@@ -461,8 +483,7 @@ void pinboard_pin_with_args(const gchar *path, const gchar *name,
 				   int x, int y, const gchar *shortcut,
 				   const gchar *args, gboolean locked, gboolean update)
 {
-	GtkWidget	*align, *vbox;
-	GdkWindow	*events;
+	GtkWidget	*vbox;
 	PinIcon		*pi;
 	Icon		*icon;
 
@@ -498,33 +519,34 @@ void pinboard_pin_with_args(const gchar *path, const gchar *name,
 	pi = pin_icon_new(path, name);
 	icon = (Icon *) pi;
 
-	/* This is a bit complicated...
-	 *
-	 * An icon needs to be a NO_WINDOW widget so that the image can
-	 * blend with the background (A ParentRelative window also works, but
-	 * is slow, causes the xfree86's memory consumption to grow without
-	 * bound, and doesn't even get freed when the filer quits!).
-	 *
-	 * However, the icon also needs to have a window, so we get events
-	 * delivered correctly. The solution is to float an InputOnly window
-	 * over the icon. Since GtkButton works the same way, we just use
-	 * that :-)
+	/* GtkEventBox (visible_window=TRUE, app_paintable=TRUE):
+	 * provides a real window for event delivery; app_paintable
+	 * keeps the surface transparent so the backdrop shows through.
+	 * widget_set_bg_color(transparent) at APPLICATION priority
+	 * overrides Adwaita's THEME-priority background; draw_icon
+	 * returns TRUE to skip any themed chrome, rendering only our
+	 * pixbuf and label children.
 	 */
 
-	 /* Button takes the initial ref of Icon */
-	pi->win = gtk_button_new();
+	 /* EventBox takes the initial ref of Icon */
+	pi->win = gtk_event_box_new();
+	gtk_widget_set_app_paintable(pi->win, TRUE);
+	gtk_event_box_set_visible_window(GTK_EVENT_BOX(pi->win), TRUE);
 	gtk_container_set_border_width(GTK_CONTAINER(pi->win), WINK_FRAME);
-	g_signal_connect(pi->win, "expose-event", G_CALLBACK(draw_wink), pi);
-	gtk_button_set_relief(GTK_BUTTON(pi->win), GTK_RELIEF_NONE);
+	g_signal_connect(pi->win, "draw", G_CALLBACK(draw_wink), pi);
+	{
+		GdkRGBA transparent = {0, 0, 0, 0};
+		widget_set_bg_color(pi->win, &transparent);
+	}
 
-	vbox = gtk_vbox_new(FALSE, 0);
+	vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
 	gtk_container_add(GTK_CONTAINER(pi->win), vbox);
 
-	align = gtk_alignment_new(0.5, 0.5, 0, 0);
-	pi->widget = gtk_hbox_new(FALSE, 0);	/* Placeholder */
-	gtk_container_add(GTK_CONTAINER(align), pi->widget);
+	pi->widget = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);	/* Placeholder */
+	gtk_widget_set_halign(pi->widget, GTK_ALIGN_CENTER);
+	gtk_widget_set_valign(pi->widget, GTK_ALIGN_CENTER);
 
-	gtk_box_pack_start(GTK_BOX(vbox), align, FALSE, TRUE, 0);
+	gtk_box_pack_start(GTK_BOX(vbox), pi->widget, FALSE, TRUE, 0);
 	drag_set_pinicon_dest(pi);
 	g_signal_connect(pi->win, "drag_data_get",
 				G_CALLBACK(drag_data_get), NULL);
@@ -561,10 +583,10 @@ void pinboard_pin_with_args(const gchar *path, const gchar *name,
 		}
 
 		pinboard_reshape_icon((Icon *) pi);
-		gtk_widget_size_request(pi->widget, &req);
+		gtk_widget_get_preferred_size(pi->widget, NULL, &req);
 		rect.width = req.width;
 		rect.height = req.height;
-		gtk_widget_size_request(pi->label, &req);
+		gtk_widget_get_preferred_size(pi->label, NULL, &req);
 		rect.width = MAX(rect.width, req.width);
 		rect.height += req.height;
 		find_free_rect(current_pinboard, &rect, FALSE, placement, DIR_VERT);
@@ -574,8 +596,7 @@ void pinboard_pin_with_args(const gchar *path, const gchar *name,
 
 	gtk_widget_show_all(pi->win);
 
-	events = GTK_BUTTON(pi->win)->event_window;
-	gdk_window_set_events(events,
+	gtk_widget_add_events(pi->win,
 			GDK_EXPOSURE_MASK |
 			GDK_ENTER_NOTIFY_MASK | GDK_LEAVE_NOTIFY_MASK |
 			GDK_BUTTON_PRESS_MASK | GDK_BUTTON_RELEASE_MASK |
@@ -591,7 +612,7 @@ void pinboard_pin_with_args(const gchar *path, const gchar *name,
 			G_CALLBACK(button_release_event), pi);
 	g_signal_connect(pi->win, "motion-notify-event",
 			G_CALLBACK(icon_motion_notify), pi);
-	g_signal_connect(pi->win, "expose-event",
+	g_signal_connect(pi->win, "draw",
 			G_CALLBACK(draw_icon), pi);
 	g_signal_connect_swapped(pi->win, "style-set",
 			G_CALLBACK(pinboard_reshape_icon), pi);
@@ -677,7 +698,10 @@ static void pinboard_wink_item(PinIcon *pi, gboolean timeout)
 	if (old)
 	{
 		gtk_widget_queue_draw(old->win);
-		gdk_window_process_updates(old->widget->window, TRUE);
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+		gdk_window_process_updates(gtk_widget_get_window(old->widget), TRUE);
+#pragma GCC diagnostic pop
 
 		if (wink_timeout != -1)
 			g_source_remove(wink_timeout);
@@ -686,7 +710,10 @@ static void pinboard_wink_item(PinIcon *pi, gboolean timeout)
 	if (pi)
 	{
 		gtk_widget_queue_draw(pi->win);
-		gdk_window_process_updates(pi->widget->window, TRUE);
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+		gdk_window_process_updates(gtk_widget_get_window(pi->widget), TRUE);
+#pragma GCC diagnostic pop
 
 		if (timeout)
 			wink_timeout = g_timeout_add(300, end_wink, NULL);
@@ -720,7 +747,8 @@ void pinboard_set_backdrop_app(const gchar *app)
 	ai = appinfo_get(app, item);
 	diritem_free(item);
 
-	can_set = ai && xml_get_section(ai, ROX_NS, "CanSetBackdrop") != NULL;
+	can_set = ai && xml_get_section(ai, (const gchar *) ROX_NS,
+					"CanSetBackdrop") != NULL;
 	if (ai)
 		g_object_unref(ai);
 
@@ -747,24 +775,30 @@ static void pinboard_set_backdrop_box(void)
 	if (set_backdrop_dialog)
 		gtk_widget_destroy(set_backdrop_dialog);
 
-	dialog = gtk_dialog_new_with_buttons(_("Set backdrop"), NULL,
-			GTK_DIALOG_NO_SEPARATOR,
-			GTK_STOCK_CLOSE, GTK_RESPONSE_OK,
-			NULL);
+	dialog = gtk_dialog_new();
+	gtk_window_set_title(GTK_WINDOW(dialog), _("Set backdrop"));
 	set_backdrop_dialog = dialog;
 	g_signal_connect(dialog, "destroy",
 			G_CALLBACK(gtk_widget_destroyed), &set_backdrop_dialog);
-	vbox = GTK_BOX(GTK_DIALOG(dialog)->vbox);
+	{
+		GtkWidget *btn = button_new_mixed("window-close",
+				_("_Close"));
+		gtk_widget_set_can_default(btn, TRUE);
+		gtk_dialog_add_action_widget(GTK_DIALOG(dialog), btn,
+				GTK_RESPONSE_OK);
+	}
+	vbox = GTK_BOX(gtk_dialog_get_content_area(GTK_DIALOG(dialog)));
 
 	gtk_window_set_position(GTK_WINDOW(dialog), GTK_WIN_POS_MOUSE);
 
 	label = gtk_label_new(_("Choose a style and drag an image in:"));
-	gtk_misc_set_padding(GTK_MISC(label), 4, 0);
-	gtk_misc_set_alignment(GTK_MISC(label), 0, 0);
+	gtk_widget_set_margin_start(label, 4);
+	gtk_widget_set_halign(label, GTK_ALIGN_START);
 	gtk_box_pack_start(vbox, label, TRUE, TRUE, 4);
 
 	/* The Centred, Scaled, Fit, Tiled radios... */
-	hbox = gtk_hbox_new(TRUE, 2);
+	hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 2);
+	gtk_box_set_homogeneous(GTK_BOX(hbox), TRUE);
 	gtk_box_pack_start(vbox, hbox, TRUE, TRUE, 4);
 
 	radios = radios_new(radios_changed, dialog);
@@ -804,34 +838,73 @@ static void pinboard_set_backdrop_box(void)
 			 G_CALLBACK(backdrop_response), NULL);
 	gtk_dialog_set_default_response(GTK_DIALOG(dialog), GTK_RESPONSE_OK);
 
+	rox_dialog_set_parent_full(dialog, FALSE);
+	number_of_windows++;
+	g_signal_connect(dialog, "destroy",
+			G_CALLBACK(one_less_window), NULL);
 	gtk_widget_show_all(dialog);
 }
 
 /* Also used by tasklist.c */
-void draw_label_shadow(WrappedLabel *wl, GdkRegion *region)
+void draw_label_shadow(WrappedLabel *wl, cairo_region_t *region)
 {
 	GtkWidget	*widget;
 	gint		x, y;
+	cairo_t		*cr;
+	PangoAttrList	*attrs;
 
 	if (!o_pinboard_shadow_labels.int_value)
 		return;
 
-	gdk_gc_set_clip_region(current_pinboard->shadow_gc, region);
-
 	widget = GTK_WIDGET(wl);
 
-	y = widget->allocation.y - wl->y_off;
-	x = widget->allocation.x - wl->x_off -
-		((wl->text_width - widget->allocation.width) >> 1);
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+	cr = gdk_cairo_create(gtk_widget_get_window(widget));
+#pragma GCC diagnostic pop
+	gdk_cairo_region(cr, region);
+	cairo_clip(cr);
 
-	gdk_draw_layout(widget->window, current_pinboard->shadow_gc,
-			x + 1, y + 1, wl->layout);
+	{
+		GtkAllocation alloc;
+		gtk_widget_get_allocation(widget, &alloc);
+		y = alloc.y - wl->y_off;
+		x = alloc.x - wl->x_off -
+			((wl->text_width - alloc.width) >> 1);
+	}
+
+	/*
+	 * Set the shadow colour via a Pango attribute list — pango_cairo_show_layout
+	 * uses the layout's foreground attribute, not the cairo source.
+	 */
+	attrs = pango_attr_list_new();
+	{
+		PangoAttribute *attr = pango_attr_foreground_new(
+			(guint16)(pin_text_shadow_col.red * 65535),
+			(guint16)(pin_text_shadow_col.green * 65535),
+			(guint16)(pin_text_shadow_col.blue * 65535));
+		/* See wrapped_label_draw — defaults are 0/0 (zero range). */
+		attr->start_index = 0;
+		attr->end_index = -1;
+		pango_attr_list_insert(attrs, attr);
+	}
+	pango_layout_set_attributes(wl->layout, attrs);
+	pango_attr_list_unref(attrs);
+
+	cairo_move_to(cr, x + 1, y + 1);
+	pango_cairo_show_layout(cr, wl->layout);
 
 	if (o_pinboard_shadow_labels.int_value > 1)
-		gdk_draw_layout(widget->window, current_pinboard->shadow_gc,
-				x + 2, y + 2, wl->layout);
+	{
+		cairo_move_to(cr, x + 2, y + 2);
+		pango_cairo_show_layout(cr, wl->layout);
+	}
 
-	gdk_gc_set_clip_region(current_pinboard->shadow_gc, NULL);
+	/* Clear the attributes so the next draw (e.g. wrapped_label_draw)
+	 * starts from a clean layout. */
+	pango_layout_set_attributes(wl->layout, NULL);
+
+	cairo_destroy(cr);
 }
 
 /* Set and save (path, style) as the new backdrop.
@@ -917,7 +990,7 @@ static void clear_backdrop(GtkWidget *drop_box, gpointer data)
 }
 
 static void drag_backdrop_dropped(GtkWidget	*drop_box,
-				  const guchar	*path,
+				  const gchar	*path,
 				  GtkWidget	*dialog)
 {
 	struct stat info;
@@ -959,11 +1032,12 @@ static gboolean recreate_pinboard(gchar *name)
 
 static void pinboard_check_options(void)
 {
-	GdkColor	n_fg, n_bg, n_shadow;
+	GdkRGBA		n_fg, n_bg;
+	GdkRGBA		n_shadow;
 
-	gdk_color_parse(o_pinboard_fg_colour.value, &n_fg);
-	gdk_color_parse(o_pinboard_bg_colour.value, &n_bg);
-	gdk_color_parse(o_pinboard_shadow_colour.value, &n_shadow);
+	gdk_rgba_parse(&n_fg, o_pinboard_fg_colour.value);
+	gdk_rgba_parse(&n_bg, o_pinboard_bg_colour.value);
+	gdk_rgba_parse(&n_shadow, o_pinboard_shadow_colour.value);
 
 	if (o_override_redirect.has_changed && current_pinboard)
 	{
@@ -975,9 +1049,9 @@ static void pinboard_check_options(void)
 
 	tasklist_set_active(o_pinboard_tasklist.int_value && current_pinboard);
 
-	if (gdk_color_equal(&n_fg, &pin_text_fg_col) == 0 ||
-		gdk_color_equal(&n_bg, &pin_text_bg_col) == 0 ||
-		gdk_color_equal(&n_shadow, &pin_text_shadow_col) == 0 ||
+	if (!gdk_rgba_equal(&n_fg, &pin_text_fg_col) ||
+		!gdk_rgba_equal(&n_bg, &pin_text_bg_col) ||
+		!gdk_rgba_equal(&n_shadow, &pin_text_shadow_col) ||
 		o_pinboard_shadow_labels.has_changed ||
 		o_label_font.has_changed)
 	{
@@ -989,15 +1063,7 @@ static void pinboard_check_options(void)
 		if (current_pinboard)
 		{
 			GtkWidget *w = current_pinboard->window;
-			GdkColormap *cm;
-
-			cm = gtk_widget_get_colormap(w);
-
-			gdk_colormap_alloc_color(cm, &n_bg, FALSE, TRUE);
-			gtk_widget_modify_bg(w, GTK_STATE_NORMAL, &n_bg);
-
-			gdk_gc_set_rgb_fg_color(current_pinboard->shadow_gc,
-					&n_shadow);
+			widget_set_bg_color(w, &n_bg);
 
 			abandon_backdrop_app(current_pinboard);
 			reload_backdrop(current_pinboard,
@@ -1008,6 +1074,17 @@ static void pinboard_check_options(void)
 		}
 
 		tasklist_style_changed();
+	}
+
+	if (o_pinboard_label_bg_colour.has_changed ||
+	    o_pinboard_label_bg_transparency.has_changed)
+	{
+		gdk_rgba_parse(&pin_label_bg_col,
+			       o_pinboard_label_bg_colour.value);
+		pin_label_bg_col.alpha =
+		(100 - o_pinboard_label_bg_transparency.int_value) / 100.0f;
+		if (current_pinboard)
+			reshape_all();
 	}
 }
 
@@ -1027,10 +1104,20 @@ static void set_size_and_style(PinIcon *pi)
 	int		iwidth = image->width;
 	int		iheight = image->height;
 
-	gtk_widget_modify_fg(pi->label, GTK_STATE_PRELIGHT, &pin_text_fg_col);
-	gtk_widget_modify_bg(pi->label, GTK_STATE_PRELIGHT, &pin_text_bg_col);
-	gtk_widget_modify_fg(pi->label, GTK_STATE_NORMAL, &pin_text_fg_col);
-	gtk_widget_modify_bg(pi->label, GTK_STATE_NORMAL, &pin_text_bg_col);
+	{
+		WrappedLabel *wl = WRAPPED_LABEL(pi->label);
+		wl->fg_col = pin_text_fg_col;
+		wl->bg_col = pin_label_bg_col;
+		/* Set the Pango foreground attribute ONCE here (not in the
+		 * draw handler — that would trigger an infinite re-layout). */
+		wrapped_label_set_fg_color(wl, &pin_text_fg_col);
+		/* Also apply the colors through the per-widget CSS
+		 * provider so callers that query the style context
+		 * (e.g. the selection highlight in draw_icon) still see
+		 * them. The helpers swap providers safely on every call. */
+		widget_set_fg_color(pi->label, &pin_text_fg_col);
+		widget_set_bg_color(pi->label, &pin_label_bg_col);
+	}
 	widget_modify_font(pi->label, pinboard_font);
 
 	wrapped_label_set_text(WRAPPED_LABEL(pi->label), icon->item->leafname);
@@ -1041,40 +1128,21 @@ static void set_size_and_style(PinIcon *pi)
 static GdkPixbuf *get_stock_icon(GtkWidget *widget,
 				 const char *stock_id)
 {
-	GtkIconSet      *icon_set;
-	GdkPixbuf	*pixbuf;
-
-	icon_set = gtk_style_lookup_icon_set(widget->style,
-					     stock_id);
-	if (icon_set)
-	{
-		pixbuf = gtk_icon_set_render_icon(icon_set,
-						  widget->style,
-						  GTK_TEXT_DIR_LTR,
-						  GTK_STATE_NORMAL,
-						  mount_icon_size,
-						  NULL,
-						  NULL);
-	}
-	else
-	{
-		pixbuf=im_unknown->pixbuf;
-		g_object_ref(pixbuf);
-	}
-
-	return pixbuf;
+	return pixmaps_get_emblem_scaled(stock_id, ROX_EMBLEM_SIZE,
+			gtk_widget_get_scale_factor(widget));
 }
 
-static gint draw_icon(GtkWidget *widget, GdkEventExpose *event, PinIcon *pi)
+static gint draw_icon(GtkWidget *widget, cairo_t *cr, PinIcon *pi)
 {
 	static GtkWidgetClass *parent_class = NULL;
 	Icon		*icon = (Icon *) pi;
 	DirItem		*item = icon->item;
 	MaskedPixmap	*image = di_image(item);
-	int		iwidth = image->width;
-	int		iheight = image->height;
 	int		x, y;
+	int		scale_factor;
 	GdkPixbuf	*pixbuf;
+
+	scale_factor = gtk_widget_get_scale_factor(widget);
 
 	if (!parent_class)
 	{
@@ -1082,20 +1150,30 @@ static gint draw_icon(GtkWidget *widget, GdkEventExpose *event, PinIcon *pi)
 		parent_class = (GtkWidgetClass *) g_type_class_peek_parent(c);
 	}
 
-	x = pi->widget->allocation.x;
-	y = pi->widget->allocation.y;
+	/* Map pi->widget's local (0,0) to the drawing widget's space */
+	gtk_widget_translate_coordinates(pi->widget, widget, 0, 0, &x, &y);
 
-	gdk_gc_set_clip_region(pi->widget->style->black_gc, event->region);
+	cairo_save(cr);
 
-	pixbuf = icon->selected
-		? create_spotlight_pixbuf(image->pixbuf,
-			&pi->widget->style->base[GTK_STATE_SELECTED])
-		: image->pixbuf;
+	if (icon->selected)
+	{
+		GtkStyleContext *style_ctx = gtk_widget_get_style_context(
+				pi->widget);
+		GdkRGBA sel_bg;
+	{
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+		gtk_style_context_get_background_color(style_ctx,
+				GTK_STATE_FLAG_SELECTED, &sel_bg);
+#pragma GCC diagnostic pop
+	}
+		pixbuf = create_spotlight_pixbuf(image->pixbuf, &sel_bg);
+	}
+	else
+		pixbuf = image->pixbuf;
 
-	render_pixbuf(pixbuf,
-			pi->widget->window,
-			pi->widget->style->black_gc,
-			x, y, iwidth, iheight);
+	gdk_cairo_set_source_pixbuf(cr, pixbuf, x, y);
+	cairo_paint(cr);
 
 	if (icon->selected)
 		g_object_unref(pixbuf);
@@ -1104,9 +1182,12 @@ static gint draw_icon(GtkWidget *widget, GdkEventExpose *event, PinIcon *pi)
 	{
 		GdkPixbuf *emblem = get_stock_icon(pi->widget,
 						   ROX_STOCK_SYMLINK);
-		render_pixbuf(emblem, pi->widget->window,
-				pi->widget->style->black_gc,
-				x, y, -1, -1);
+		cairo_save(cr);
+		cairo_scale(cr, 1.0 / scale_factor, 1.0 / scale_factor);
+		gdk_cairo_set_source_pixbuf(cr, emblem,
+				x * scale_factor, y * scale_factor);
+		cairo_paint(cr);
+		cairo_restore(cr);
 		g_object_unref(emblem);
 	}
 	else if (item->flags & ITEM_FLAG_MOUNT_POINT)
@@ -1116,60 +1197,89 @@ static gint draw_icon(GtkWidget *widget, GdkEventExpose *event, PinIcon *pi)
 						   ? ROX_STOCK_MOUNTED
 						   : ROX_STOCK_MOUNT);
 
-		render_pixbuf(emblem, pi->widget->window,
-				pi->widget->style->black_gc,
-				x, y, -1, -1);
+		cairo_save(cr);
+		cairo_scale(cr, 1.0 / scale_factor, 1.0 / scale_factor);
+		gdk_cairo_set_source_pixbuf(cr, emblem,
+				x * scale_factor, y * scale_factor);
+		cairo_paint(cr);
+		cairo_restore(cr);
 		g_object_unref(emblem);
 	}
 
-	gdk_gc_set_clip_region(pi->widget->style->black_gc, NULL);
+	cairo_restore(cr);
 
 	if (icon->selected)
 	{
-		GtkStyle *style = pi->label->style;
-		GdkGC *gc = style->bg_gc[GTK_STATE_SELECTED];
+		GtkStyleContext *style_ctx = gtk_widget_get_style_context(
+				pi->label);
+		GdkRGBA bg;
+		GtkAllocation label_alloc;
+		gint label_x, label_y;
 
-		gdk_gc_set_clip_region(gc, event->region);
-		gdk_draw_rectangle(pi->label->window, gc, TRUE,
-				pi->label->allocation.x,
-				pi->label->allocation.y,
-				pi->label->allocation.width,
-				pi->label->allocation.height);
-		gdk_gc_set_clip_region(gc, NULL);
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+		gtk_style_context_get_background_color(style_ctx,
+				GTK_STATE_FLAG_SELECTED, &bg);
+#pragma GCC diagnostic pop
+		gdk_cairo_set_source_rgba(cr, &bg);
+		gtk_widget_get_allocation(pi->label, &label_alloc);
+		/* Translate label coordinates to the drawing widget's space. */
+		gtk_widget_translate_coordinates(pi->label, widget, 0, 0,
+						 &label_x, &label_y);
+		cairo_rectangle(cr, label_x, label_y,
+				label_alloc.width, label_alloc.height);
+		cairo_fill(cr);
 	}
 	else if (o_pinboard_shadow_labels.int_value)
-		draw_label_shadow((WrappedLabel *) pi->label, event->region);
+	{
+		cairo_rectangle_int_t rect;
+		cairo_region_t *region;
+		GtkAllocation label_alloc;
+		gint label_x, label_y;
+
+		gtk_widget_get_allocation(pi->label, &label_alloc);
+		gtk_widget_translate_coordinates(pi->label, widget, 0, 0,
+						 &label_x, &label_y);
+		rect.x = label_x;
+		rect.y = label_y;
+		rect.width = label_alloc.width;
+		rect.height = label_alloc.height;
+		region = cairo_region_create_rectangle(&rect);
+		draw_label_shadow((WrappedLabel *) pi->label, region);
+		cairo_region_destroy(region);
+	}
 
 	/* Draw children */
-	gdk_gc_set_clip_region(pi->label->style->fg_gc[GTK_STATE_NORMAL],
-				event->region);
-	(parent_class->expose_event)(widget, event);
-	gdk_gc_set_clip_region(pi->label->style->fg_gc[GTK_STATE_NORMAL], NULL);
+	parent_class->draw(widget, cr);
 
 	/* Stop the button effect */
 	return TRUE;
 }
 
-static gint draw_wink(GtkWidget *widget, GdkEventExpose *event, PinIcon *pi)
+static gint draw_wink(GtkWidget *widget, cairo_t *cr, PinIcon *pi)
 {
-	gint x, y, width, height;
+	gint width, height;
 
 	if (current_wink_icon != pi)
 		return FALSE;
 
-	x = widget->allocation.x;
-	y = widget->allocation.y;
-	width = widget->allocation.width;
-	height = widget->allocation.height;
+	{
+		GtkAllocation alloc;
+		gtk_widget_get_allocation(widget, &alloc);
+		width = alloc.width;
+		height = alloc.height;
+	}
 
-	gdk_draw_rectangle(widget->window,
-			pi->widget->style->white_gc,
-			FALSE,
-			x, y, width - 1, height - 1);
-	gdk_draw_rectangle(widget->window,
-			pi->widget->style->black_gc,
-			FALSE,
-			x + 1, y + 1, width - 3, height - 3);
+	cairo_set_source_rgb(cr, 1.0, 1.0, 1.0);
+	cairo_set_line_width(cr, 1.0);
+
+	/* Use local coordinates starting from 0. */
+	cairo_rectangle(cr, 0.5, 0.5, width - 2, height - 2);
+	cairo_stroke(cr);
+
+	cairo_set_source_rgb(cr, 0.0, 0.0, 0.0);
+	cairo_rectangle(cr, 1.5, 1.5, width - 4, height - 4);
+	cairo_stroke(cr);
 
 	return FALSE;
 }
@@ -1205,9 +1315,10 @@ static void select_lasso(void)
 	for (next = current_pinboard->icons; next; next = next->next)
 	{
 		PinIcon *pi = (PinIcon *) next->data;
-		GtkAllocation *alloc = &pi->win->allocation;
-		int cx = alloc->x + alloc->width / 2;
-		int cy = alloc->y + alloc->height / 2;
+		GtkAllocation alloc;
+		gtk_widget_get_allocation(pi->win, &alloc);
+		int cx = alloc.x + alloc.width / 2;
+		int cy = alloc.y + alloc.height / 2;
 
 		if (cx > minx && cx < maxx && cy > miny && cy < maxy)
 			icon_set_selected((Icon *) pi, TRUE);
@@ -1250,37 +1361,19 @@ static gint lasso_motion(GtkWidget *widget, GdkEventMotion *event, gpointer d)
 /* Mark the area of the screen covered by the lasso box for redraw */
 static void draw_lasso(void)
 {
-	GdkRectangle area, edge;
+	GdkRectangle area;
 
 	if (!lasso_in_progress)
 		return;
 
-	area.x = MIN(lasso_rect_x1, lasso_rect_x2);
-	area.y = MIN(lasso_rect_y1, lasso_rect_y2);
-	area.width = ABS(lasso_rect_x1 - lasso_rect_x2);
-	area.height = ABS(lasso_rect_y1 - lasso_rect_y2);
+	area.x = MIN(lasso_rect_x1, lasso_rect_x2) - 2;
+	area.y = MIN(lasso_rect_y1, lasso_rect_y2) - 2;
+	area.width = ABS(lasso_rect_x1 - lasso_rect_x2) + 4;
+	area.height = ABS(lasso_rect_y1 - lasso_rect_y2) + 4;
 
-	edge.x = area.x;
-	edge.y = area.y;
-	edge.width = area.width;
-
-	edge.height = 2;		/* Top */
-	gdk_window_invalidate_rect(current_pinboard->window->window,
-				   &edge, TRUE);
-
-	edge.y += area.height - 2;	/* Bottom */
-	gdk_window_invalidate_rect(current_pinboard->window->window,
-				   &edge, TRUE);
-
-	edge.y = area.y;
-	edge.height = area.height;
-	edge.width = 2;			/* Left */
-	gdk_window_invalidate_rect(current_pinboard->window->window,
-				   &edge, TRUE);
-
-	edge.x += area.width - 2;	/* Right */
-	gdk_window_invalidate_rect(current_pinboard->window->window,
-				   &edge, TRUE);
+	gtk_widget_queue_draw_area(current_pinboard->fixed,
+				   area.x, area.y,
+				   area.width, area.height);
 }
 
 static void perform_action(PinIcon *pi, GdkEventButton *event)
@@ -1366,8 +1459,8 @@ static void forward_to_root(GdkEventButton *event)
 		xev.type = ButtonPress;
 		if (!o_blackbox_hack.int_value)
 		{
-			gdk_display_pointer_ungrab(gdk_x11_lookup_xdisplay(gdk_display),
-						   event->time);
+			GdkSeat *seat = gdk_display_get_default_seat(gdk_display_get_default());
+			gdk_seat_ungrab(seat);
 		}
 	}
 	else
@@ -1377,15 +1470,22 @@ static void forward_to_root(GdkEventButton *event)
 	xev.root =  xev.window;
 	xev.subwindow = None;
 	xev.time = event->time;
-	xev.x = event->x_root;	/* Needed for icewm */
-	xev.y = event->y_root;
-	xev.x_root = event->x_root;
-	xev.y_root = event->y_root;
+
+	{
+		int scale = gtk_widget_get_scale_factor(
+				current_pinboard->window);
+
+		xev.x = (int) round(event->x_root * scale);
+		xev.y = (int) round(event->y_root * scale);
+		xev.x_root = (int) round(event->x_root * scale);
+		xev.y_root = (int) round(event->y_root * scale);
+	}
+
 	xev.state = event->state;
 	xev.button = event->button;
 	xev.same_screen = True;
 
-	XSendEvent(gdk_display, xev.window, False,
+	XSendEvent(GDK_DISPLAY_XDISPLAY(gdk_display_get_default()), xev.window, False,
 		ButtonPressMask | ButtonReleaseMask, (XEvent *) &xev);
 }
 
@@ -1420,7 +1520,7 @@ static gboolean button_press_event(GtkWidget *widget,
                             	   PinIcon *pi)
 {
 	/* Just in case we've jumped in front of everything... */
-	gdk_window_lower(current_pinboard->window->window);
+	gdk_window_lower(gtk_widget_get_window(current_pinboard->window));
 
 	if (FORWARDED_BUTTON(pi, event->button))
 		forward_to_root(event);
@@ -1442,10 +1542,16 @@ static gboolean scroll_event(GtkWidget *widget, GdkEventScroll *event)
 	xev.root =  xev.window;
 	xev.subwindow = None;
 	xev.time = event->time;
-	xev.x = event->x_root;	/* Needed for icewm */
-	xev.y = event->y_root;
-	xev.x_root = event->x_root;
-	xev.y_root = event->y_root;
+
+	{
+		int scale = gtk_widget_get_scale_factor(widget);
+
+		xev.x = (int) round(event->x_root * scale);
+		xev.y = (int) round(event->y_root * scale);
+		xev.x_root = (int) round(event->x_root * scale);
+		xev.y_root = (int) round(event->y_root * scale);
+	}
+
 	xev.state = event->state;
 	xev.same_screen = True;
 
@@ -1456,7 +1562,7 @@ static gboolean scroll_event(GtkWidget *widget, GdkEventScroll *event)
 	else
 		return FALSE;
 
-	XSendEvent(gdk_display, xev.window, False,
+	XSendEvent(GDK_DISPLAY_XDISPLAY(gdk_display_get_default()), xev.window, False,
 			ButtonPressMask, (XEvent *) &xev);
 
 	return TRUE;
@@ -1481,7 +1587,7 @@ static void start_drag(PinIcon *pi, GdkEventMotion *event)
 		drag_one_item(widget, event, icon->path, icon->item, NULL);
 	else
 	{
-		guchar	*uri_list;
+		gchar	*uri_list;
 
 		uri_list = icon_create_uri_list();
 		drag_selection(widget, event, uri_list);
@@ -1509,9 +1615,9 @@ static void backdrop_from_xml(xmlNode *node)
 	gchar *style;
 
 	g_free(current_pinboard->backdrop);
-	current_pinboard->backdrop = xmlNodeGetContent(node);
+	current_pinboard->backdrop = (gchar *) xmlNodeGetContent(node);
 
-	style = xmlGetProp(node, "style");
+	style = (gchar *) xmlGetProp(node, BAD_CAST "style");
 
 	if (style)
 	{
@@ -1543,36 +1649,36 @@ static void pinboard_load_from_xml(xmlDocPtr doc)
 	{
 		if (node->type != XML_ELEMENT_NODE)
 			continue;
-		if (strcmp(node->name, "backdrop") == 0)
+		if (xmlStrcmp(node->name, BAD_CAST "backdrop") == 0)
 		{
 			backdrop_from_xml(node);
 			continue;
 		}
-		if (strcmp(node->name, "icon") != 0)
+		if (xmlStrcmp(node->name, BAD_CAST "icon") != 0)
 			continue;
 
-		tmp = xmlGetProp(node, "x");
+		tmp = (gchar *) xmlGetProp(node, BAD_CAST "x");
 		if (!tmp)
 			continue;
 		x = atoi(tmp);
 		g_free(tmp);
 
-		tmp = xmlGetProp(node, "y");
+		tmp = (gchar *) xmlGetProp(node, BAD_CAST "y");
 		if (!tmp)
 			continue;
 		y = atoi(tmp);
 		g_free(tmp);
 
-		label = xmlGetProp(node, "label");
+		label = (gchar *) xmlGetProp(node, BAD_CAST "label");
 		if (!label)
 			label = g_strdup("<missing label>");
-		path = xmlNodeGetContent(node);
+		path = (gchar *) xmlNodeGetContent(node);
 		if (!path)
 			path = g_strdup("<missing path>");
-		shortcut = xmlGetProp(node, "shortcut");
-		args = xmlGetProp(node, "args");
+		shortcut = (gchar *) xmlGetProp(node, BAD_CAST "shortcut");
+		args = (gchar *) xmlGetProp(node, BAD_CAST "args");
 
-		tmp = xmlGetProp(node, "locked");
+		tmp = (gchar *) xmlGetProp(node, BAD_CAST "locked");
 		if (tmp)
 		{
 			locked = text_to_boolean(tmp, FALSE);
@@ -1630,8 +1736,8 @@ static const char *pin_from_file(gchar *line)
 /* Write the current state of the pinboard to the current pinboard file */
 static void pinboard_save(void)
 {
-	guchar	*save = NULL;
-	guchar	*save_new = NULL;
+	gchar	*save = NULL;
+	gchar	*save_new = NULL;
 	GList	*next;
 	xmlDocPtr doc = NULL;
 	xmlNodePtr root;
@@ -1642,18 +1748,18 @@ static void pinboard_save(void)
 		save = g_strdup(current_pinboard->name);
 	else
 	{
-		guchar	*leaf;
+		gchar	*leaf;
 
 		leaf = g_strconcat("pb_", current_pinboard->name, NULL);
-		save = choices_find_xdg_path_save(leaf, PROJECT, SITE, TRUE);
+		save = choices_find_xdg_path_save(leaf, project_name, SITE, TRUE);
 		g_free(leaf);
 	}
 
 	if (!save)
 		return;
 
-	doc = xmlNewDoc("1.0");
-	xmlDocSetRootElement(doc, xmlNewDocNode(doc, NULL, "pinboard", NULL));
+	doc = xmlNewDoc(BAD_CAST "1.0");
+	xmlDocSetRootElement(doc, xmlNewDocNode(doc, NULL, BAD_CAST "pinboard", NULL));
 
 	root = xmlDocGetRootElement(doc);
 
@@ -1662,15 +1768,15 @@ static void pinboard_save(void)
 		BackdropStyle style = current_pinboard->backdrop_style;
 		xmlNodePtr tree;
 
-		tree = xmlNewTextChild(root, NULL, "backdrop",
-				current_pinboard->backdrop);
-		xmlSetProp(tree, "style",
-			style == BACKDROP_TILE   ? "Tiled" :
+		tree = xmlNewTextChild(root, NULL, BAD_CAST "backdrop",
+				(const xmlChar *) current_pinboard->backdrop);
+		xmlSetProp(tree, BAD_CAST "style",
+			(const xmlChar *) (style == BACKDROP_TILE   ? "Tiled" :
 			style == BACKDROP_CENTRE ? "Centred" :
 			style == BACKDROP_SCALE  ? "Scaled" :
 			style == BACKDROP_FIT    ? "Fit" :
 			style == BACKDROP_STRETCH  ? "Stretched" :
-						   "Program");
+						   "Program"));
 	}
 
 	for (next = current_pinboard->icons; next; next = next->next)
@@ -1680,23 +1786,27 @@ static void pinboard_save(void)
 		Icon	*icon = (Icon *) pi;
 		char *tmp;
 
-		tree = xmlNewTextChild(root, NULL, "icon", icon->src_path);
+		tree = xmlNewTextChild(root, NULL, BAD_CAST "icon",
+				(const xmlChar *) icon->src_path);
 
 		tmp = g_strdup_printf("%d", pi->x);
-		xmlSetProp(tree, "x", tmp);
+		xmlSetProp(tree, BAD_CAST "x", (const xmlChar *) tmp);
 		g_free(tmp);
 
 		tmp = g_strdup_printf("%d", pi->y);
-		xmlSetProp(tree, "y", tmp);
+		xmlSetProp(tree, BAD_CAST "y", (const xmlChar *) tmp);
 		g_free(tmp);
 
-		xmlSetProp(tree, "label", icon->item->leafname);
+		xmlSetProp(tree, BAD_CAST "label",
+				(const xmlChar *) icon->item->leafname);
 		if (icon->shortcut)
-			xmlSetProp(tree, "shortcut", icon->shortcut);
+			xmlSetProp(tree, BAD_CAST "shortcut",
+					(const xmlChar *) icon->shortcut);
 		if (icon->args)
-			xmlSetProp(tree, "args", icon->args);
+			xmlSetProp(tree, BAD_CAST "args",
+					(const xmlChar *) icon->args);
 		if (icon->locked)
-			xmlSetProp(tree, "locked", "true");
+			xmlSetProp(tree, BAD_CAST "locked", BAD_CAST "true");
 	}
 
 	save_new = g_strconcat(save, ".new", NULL);
@@ -1724,7 +1834,7 @@ static void offset_from_centre(PinIcon *pi, int *x, int *y)
 	gboolean clamp = o_pinboard_clamp_icons.int_value;
 	GtkRequisition req;
 
-	gtk_widget_size_request(pi->win, &req);
+	gtk_widget_get_preferred_size(pi->win, NULL, &req);
 
 	*x -= req.width >> 1;
 	*y -= req.height >> 1;
@@ -1735,13 +1845,11 @@ static void offset_from_centre(PinIcon *pi, int *x, int *y)
 /* Same as drag_set_dest(), but for pinboard icons */
 static void drag_set_pinicon_dest(PinIcon *pi)
 {
-	GtkObject	*obj = GTK_OBJECT(pi->win);
-
 	make_drop_target(pi->win, 0);
 
-	g_signal_connect(obj, "drag_motion", G_CALLBACK(drag_motion), pi);
-	g_signal_connect(obj, "drag_leave", G_CALLBACK(drag_leave), pi);
-	g_signal_connect(obj, "drag_end", G_CALLBACK(drag_end), pi);
+	g_signal_connect(pi->win, "drag_motion", G_CALLBACK(drag_motion), pi);
+	g_signal_connect(pi->win, "drag_leave", G_CALLBACK(drag_leave), pi);
+	g_signal_connect(pi->win, "drag_end", G_CALLBACK(drag_end), pi);
 }
 
 /* Called during the drag when the mouse is in a widget registered
@@ -1754,7 +1862,7 @@ static gboolean drag_motion(GtkWidget		*widget,
                             guint		time,
 			    PinIcon		*pi)
 {
-	GdkDragAction	action = context->suggested_action;
+	GdkDragAction	action = gdk_drag_context_get_suggested_action(context);
 	const char	*type = NULL;
 	Icon		*icon = (Icon *) pi;
 	DirItem		*item = icon->item;
@@ -1771,12 +1879,12 @@ static gboolean drag_motion(GtkWidget		*widget,
 
 	type = dnd_motion_item(context, &item);
 
-	if ((context->actions & GDK_ACTION_ASK) && o_dnd_left_menu.int_value
+	if ((gdk_drag_context_get_actions(context) & GDK_ACTION_ASK) && o_dnd_left_menu.int_value
 		&& type != drop_dest_prog)
 	{
-		guint state;
-		gdk_window_get_pointer(NULL, NULL, NULL, &state);
-		if (state & GDK_BUTTON1_MASK)
+		gint x, y;
+		gui_get_pointer(gtk_widget_get_window(widget), &x, &y, NULL);
+		if (gdk_drag_context_get_actions(context) & GDK_ACTION_ASK)
 			action = GDK_ACTION_ASK;
 	}
 
@@ -1816,87 +1924,75 @@ out:
 
 static gboolean pinboard_shadow = FALSE;
 static gint shadow_x, shadow_y;
+static cairo_surface_t *backdrop_surface = NULL;
 #define SHADOW_SIZE (ICON_WIDTH)
 
-static gboolean bg_expose(GtkWidget *widget,
-			  GdkEventExpose *event, gpointer data)
+static gboolean bg_draw(GtkWidget *widget,
+			  cairo_t *cr, gpointer data)
 {
-	GdkRectangle clipbox;
+	gdouble cx1, cy1, cx2, cy2;
 	gpointer gclass = ((GTypeInstance *) widget)->g_class;
-	gboolean double_buffer;
 
-	gdk_gc_set_clip_region(widget->style->white_gc, event->region);
-	gdk_gc_set_clip_region(widget->style->black_gc, event->region);
-
-	gdk_region_get_clipbox(event->region, &clipbox);
-
-	double_buffer = (clipbox.width * clipbox.height) < 20000;
-	if (double_buffer)
-		gdk_window_begin_paint_region(widget->window, event->region);
+	cairo_clip_extents(cr, &cx1, &cy1, &cx2, &cy2);
 
 	/* Clear the area to the background image */
 	{
-		GtkStyle *style = current_pinboard->window->style;
-		GdkGC *gc = style->bg_gc[GTK_STATE_NORMAL];
-
-		gdk_gc_set_clip_region(gc, event->region);
-		if (style->bg_pixmap[GTK_STATE_NORMAL])
+		if (backdrop_surface)
 		{
-			gdk_gc_set_ts_origin(gc, 0, 0);
-			gdk_gc_set_fill(gc, GDK_TILED);
-			gdk_gc_set_tile(gc, style->bg_pixmap[GTK_STATE_NORMAL]);
+			cairo_pattern_t *pattern;
+
+			pattern = cairo_pattern_create_for_surface(backdrop_surface);
+			cairo_pattern_set_extend(pattern, CAIRO_EXTEND_REPEAT);
+			cairo_set_source(cr, pattern);
+			cairo_paint(cr);
+			cairo_pattern_destroy(pattern);
 		}
+		else
+		{
+			GtkStyleContext *style_ctx;
+			GdkRGBA bg;
 
-		gdk_draw_rectangle(current_pinboard->window->window, gc, TRUE,
-				   clipbox.x, clipbox.y,
-				   clipbox.width, clipbox.height);
-		if (style->bg_pixmap[GTK_STATE_NORMAL])
-			gdk_gc_set_fill(gc, GDK_SOLID);
-
-		gdk_gc_set_clip_region(gc, NULL);
+			style_ctx = gtk_widget_get_style_context(
+					current_pinboard->window);
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+			gtk_style_context_get_background_color(style_ctx,
+					GTK_STATE_NORMAL, &bg);
+#pragma GCC diagnostic pop
+			cairo_set_source_rgb(cr, bg.red, bg.green, bg.blue);
+			cairo_paint(cr);
+		}
 	}
 
 	if (pinboard_shadow)
 	{
-		gdk_draw_rectangle(widget->window,
-				widget->style->white_gc, FALSE,
-				shadow_x, shadow_y,
-				SHADOW_SIZE, SHADOW_SIZE);
-		gdk_draw_rectangle(widget->window,
-				widget->style->black_gc, FALSE,
-				shadow_x + 1, shadow_y + 1,
-				SHADOW_SIZE - 2, SHADOW_SIZE - 2);
+		cairo_set_line_width(cr, 1.0);
+
+		cairo_set_source_rgb(cr, 1.0, 1.0, 1.0);
+		cairo_rectangle(cr, shadow_x + 0.5, shadow_y + 0.5,
+				SHADOW_SIZE - 1, SHADOW_SIZE - 1);
+		cairo_stroke(cr);
+
+		cairo_set_source_rgb(cr, 0.0, 0.0, 0.0);
+		cairo_rectangle(cr, shadow_x + 1.5, shadow_y + 1.5,
+				SHADOW_SIZE - 3, SHADOW_SIZE - 3);
+		cairo_stroke(cr);
 	}
 
 	if (lasso_in_progress)
 	{
-		GdkRectangle area;
+		gint lx, ly, lw, lh;
 
-		area.x = MIN(lasso_rect_x1, lasso_rect_x2);
-		area.y = MIN(lasso_rect_y1, lasso_rect_y2);
-		area.width = ABS(lasso_rect_x1 - lasso_rect_x2);
-		area.height = ABS(lasso_rect_y1 - lasso_rect_y2);
+		lx = MIN(lasso_rect_x1, lasso_rect_x2);
+		ly = MIN(lasso_rect_y1, lasso_rect_y2);
+		lw = ABS(lasso_rect_x1 - lasso_rect_x2);
+		lh = ABS(lasso_rect_y1 - lasso_rect_y2);
 
-		if (area.width > 4 && area.height > 4)
-		{
-			gdk_draw_rectangle(widget->window,
-					widget->style->white_gc, FALSE,
-					area.x, area.y,
-					area.width - 1, area.height - 1);
-			gdk_draw_rectangle(widget->window,
-					widget->style->black_gc, FALSE,
-					area.x + 1, area.y + 1,
-					area.width - 3, area.height - 3);
-		}
+		if (lw > 0 && lh > 0)
+			view_utils_draw_rubberband(widget, cr, lx, ly, lw, lh);
 	}
 
-	gdk_gc_set_clip_region(widget->style->white_gc, NULL);
-	gdk_gc_set_clip_region(widget->style->black_gc, NULL);
-
-	((GtkWidgetClass *) gclass)->expose_event(widget, event);
-
-	if (double_buffer)
-		gdk_window_end_paint(widget->window);
+	((GtkWidgetClass *) gclass)->draw(widget, cr);
 
 	return TRUE;
 }
@@ -1915,7 +2011,7 @@ static void pinboard_set_shadow(gboolean on)
 		area.width = SHADOW_SIZE + 1;
 		area.height = SHADOW_SIZE + 1;
 
-		gdk_window_invalidate_rect(current_pinboard->window->window,
+		gdk_window_invalidate_rect(gtk_widget_get_window(current_pinboard->window),
 					&area, TRUE);
 	}
 
@@ -1923,7 +2019,7 @@ static void pinboard_set_shadow(gboolean on)
 	{
 		int	old_x = shadow_x, old_y = shadow_y;
 
-		gdk_window_get_pointer(current_pinboard->fixed->window,
+		gui_get_pointer(gtk_widget_get_window(current_pinboard->fixed),
 					&shadow_x, &shadow_y, NULL);
 		snap_to_grid(&shadow_x, &shadow_y);
 		shadow_x -= SHADOW_SIZE / 2;
@@ -1938,7 +2034,7 @@ static void pinboard_set_shadow(gboolean on)
 		area.width = SHADOW_SIZE + 1;
 		area.height = SHADOW_SIZE + 1;
 
-		gdk_window_invalidate_rect(current_pinboard->window->window,
+		gdk_window_invalidate_rect(gtk_widget_get_window(current_pinboard->window),
 					&area, TRUE);
 	}
 
@@ -2025,8 +2121,8 @@ static gboolean bg_drag_motion(GtkWidget	*widget,
 	pinboard_set_shadow(TRUE);
 
 	gdk_drag_status(context,
-			context->suggested_action == GDK_ACTION_ASK
-				? GDK_ACTION_LINK : context->suggested_action,
+			gdk_drag_context_get_suggested_action(context) == GDK_ACTION_ASK
+				? GDK_ACTION_LINK : gdk_drag_context_get_suggested_action(context),
 			time);
 	return TRUE;
 }
@@ -2082,8 +2178,8 @@ static void pinboard_clear(void)
 
 	abandon_backdrop_app(current_pinboard);
 
-	g_object_unref(current_pinboard->shadow_gc);
-	current_pinboard->shadow_gc = NULL;
+	if (placed_icons)
+		g_hash_table_remove_all(placed_icons);
 
 	g_free(current_pinboard->name);
 	null_g_free(&current_pinboard);
@@ -2218,8 +2314,8 @@ static void pin_icon_set_tip(PinIcon *pi)
 
 	if (ai && ((node = xml_get_section(ai, NULL, "Summary"))))
 	{
-		guchar *str;
-		str = xmlNodeListGetString(node->doc,
+		gchar *str;
+		str = (gchar *) xmlNodeListGetString(node->doc,
 				node->xmlChildrenNode, 1);
 		if (str)
 		{
@@ -2238,28 +2334,18 @@ static void pinboard_show_menu(GdkEventButton *event, PinIcon *pi)
 {
 	GtkWidget	*option_item;
 	GtkWidget	*new_panel_item;
-	int		pos[3];
-	GList		*list;
 
-	pos[0] = event->x_root;
-	pos[1] = event->y_root;
-
-	option_item = gtk_image_menu_item_new_with_label(_("Backdrop..."));
+	option_item = menu_item_new_named_image(_("Backdrop..."),
+			"preferences-system");
 	g_signal_connect(option_item, "activate",
-			 G_CALLBACK(pinboard_set_backdrop_box), NULL);
-	new_panel_item = gtk_image_menu_item_new_with_label(_("Add Panel"));
-	add_stock_to_menu_item(new_panel_item, GTK_STOCK_ADD);
+			G_CALLBACK(pinboard_set_backdrop_box), NULL);
+	new_panel_item = menu_item_new_named_image_mnemonic(_("Add _Panel"),
+			"list-add");
 	gtk_menu_item_set_submenu(GTK_MENU_ITEM(new_panel_item),
 			panel_new_panel_submenu());
 	icon_prepare_menu((Icon *) pi, option_item, new_panel_item, NULL);
 
-	list = gtk_container_get_children(GTK_CONTAINER(icon_menu));
-	pos[2] = g_list_length(list) - 6;
-	g_list_free(list);
-
-	gtk_menu_popup(GTK_MENU(icon_menu), NULL, NULL,
-			position_menu,
-			(gpointer) pos, event->button, event->time);
+	gtk_menu_popup_at_pointer(GTK_MENU(icon_menu), (GdkEvent *) event);
 }
 
 static void create_pinboard_window(Pinboard *pinboard)
@@ -2269,16 +2355,17 @@ static void create_pinboard_window(Pinboard *pinboard)
 	g_return_if_fail(pinboard->window == NULL);
 
 	win = gtk_window_new(GTK_WINDOW_TOPLEVEL);
-	gtk_widget_set_style(win, gtk_widget_get_default_style());
 
-	gtk_widget_set_double_buffered(win, FALSE);
 	gtk_widget_set_app_paintable(win, TRUE);
 	gtk_widget_set_name(win, "rox-pinboard");
 	pinboard->window = win;
 	pinboard->fixed = gtk_fixed_new();
 	gtk_container_add(GTK_CONTAINER(win), pinboard->fixed);
 
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 	gtk_window_set_wmclass(GTK_WINDOW(win), "ROX-Pinboard", PROJECT);
+#pragma GCC diagnostic pop
 
 	gtk_widget_set_size_request(win, screen_width, screen_height);
 	gtk_widget_realize(win);
@@ -2291,7 +2378,7 @@ static void create_pinboard_window(Pinboard *pinboard)
 
 		desktop_type = gdk_atom_intern("_NET_WM_WINDOW_TYPE_DESKTOP",
 						FALSE);
-		gdk_property_change(win->window,
+		gdk_property_change(gtk_widget_get_window(win),
 			gdk_atom_intern("_NET_WM_WINDOW_TYPE", FALSE),
 			gdk_atom_intern("ATOM", FALSE), 32,
 			GDK_PROP_MODE_REPLACE, (guchar *) &desktop_type, 1);
@@ -2308,8 +2395,8 @@ static void create_pinboard_window(Pinboard *pinboard)
 			G_CALLBACK(button_release_event), NULL);
 	g_signal_connect(win, "motion-notify-event",
 			G_CALLBACK(lasso_motion), NULL);
-	g_signal_connect(pinboard->fixed, "expose_event",
-			G_CALLBACK(bg_expose), NULL);
+	g_signal_connect(pinboard->fixed, "draw",
+			G_CALLBACK(bg_draw), NULL);
 
 	/* Some window managers use scroll events on the root to switch
 	 * desktops, but don't cope with our pinboard window, so we forward
@@ -2322,19 +2409,16 @@ static void create_pinboard_window(Pinboard *pinboard)
 	g_signal_connect(win, "drag_motion", G_CALLBACK(bg_drag_motion), NULL);
 	g_signal_connect(win, "drag_leave", G_CALLBACK(bg_drag_leave), NULL);
 
-	pinboard->shadow_gc = gdk_gc_new(win->window);
-	gdk_gc_set_rgb_fg_color(pinboard->shadow_gc, &pin_text_shadow_col);
-
 	reload_backdrop(current_pinboard, NULL, BACKDROP_NONE);
 
 	gtk_widget_show_all(win);
-	gdk_window_lower(win->window);
+	gdk_window_lower(gtk_widget_get_window(win));
 }
 
 /* Load image 'path' and scale according to 'style' */
-static GdkPixmap *load_backdrop(const gchar *path, BackdropStyle style)
+static cairo_surface_t *load_backdrop(const gchar *path, BackdropStyle style)
 {
-	GdkPixmap *pixmap;
+	cairo_surface_t *surface;
 	GdkPixbuf *pixbuf;
 	GError *error = NULL;
 
@@ -2389,9 +2473,9 @@ static GdkPixmap *load_backdrop(const gchar *path, BackdropStyle style)
 		pixbuf = gdk_pixbuf_new(
 				gdk_pixbuf_get_colorspace(pixbuf), FALSE,
 				8, screen_width, screen_height);
-		gdk_pixbuf_fill(pixbuf, ((pin_text_bg_col.red & 0xff00) << 16) |
-					((pin_text_bg_col.green & 0xff00) << 8) |
-					((pin_text_bg_col.blue & 0xff00)));
+		gdk_pixbuf_fill(pixbuf, ((guint)(pin_text_bg_col.red * 255) << 16) |
+					((guint)(pin_text_bg_col.green * 255) << 8) |
+					((guint)(pin_text_bg_col.blue * 255)));
 
 		x = (screen_width - width * scale) / 2;
 		y = (screen_height - height * scale) / 2;
@@ -2422,11 +2506,18 @@ static GdkPixmap *load_backdrop(const gchar *path, BackdropStyle style)
 		g_object_unref(old);
 	}
 
-	gdk_pixbuf_render_pixmap_and_mask(pixbuf,
-			&pixmap, NULL, 0);
+	surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32,
+			gdk_pixbuf_get_width(pixbuf),
+			gdk_pixbuf_get_height(pixbuf));
+	{
+		cairo_t *cr2 = cairo_create(surface);
+		gdk_cairo_set_source_pixbuf(cr2, pixbuf, 0, 0);
+		cairo_paint(cr2);
+		cairo_destroy(cr2);
+	}
 	g_object_unref(pixbuf);
 
-	return pixmap;
+	return surface;
 }
 
 static void abandon_backdrop_app(Pinboard *pinboard)
@@ -2513,9 +2604,11 @@ static void command_from_backdrop_app(Pinboard *pinboard, const gchar *command)
 	}
 }
 
-static void backdrop_from_child(Pinboard *pinboard,
-				int src, GdkInputCondition cond)
+static gboolean backdrop_from_child(GIOChannel *source,
+				GIOCondition cond, gpointer data)
 {
+	Pinboard *pinboard = (Pinboard *) data;
+	int src = g_io_channel_unix_get_fd(source);
 	char buf[256];
 	int got;
 
@@ -2527,7 +2620,7 @@ static void backdrop_from_child(Pinboard *pinboard,
 			g_warning("backdrop_from_child: %s\n",
 					g_strerror(errno));
 		abandon_backdrop_app(pinboard);
-		return;
+		return FALSE;
 	}
 
 	g_string_append_len(pinboard->input_buffer, buf, got);
@@ -2539,7 +2632,7 @@ static void backdrop_from_child(Pinboard *pinboard,
 
 		nl = strchr(pinboard->input_buffer->str, '\n');
 		if (!nl)
-			return;		/* Haven't got a whole line yet */
+			return TRUE;	/* Haven't got a whole line yet */
 
 		len = nl - pinboard->input_buffer->str;
 		command = g_strndup(pinboard->input_buffer->str, len);
@@ -2549,14 +2642,14 @@ static void backdrop_from_child(Pinboard *pinboard,
 
 		g_free(command);
 	}
+
+	return TRUE;
 }
 
 static void reload_backdrop(Pinboard *pinboard,
 			    const gchar *backdrop,
 			    BackdropStyle backdrop_style)
 {
-	GtkStyle *style;
-
 	if (backdrop && backdrop_style == BACKDROP_PROGRAM)
 	{
 		const char *argv[] = {NULL, "--backdrop", NULL};
@@ -2584,11 +2677,16 @@ static void reload_backdrop(Pinboard *pinboard,
 				&error))
 		{
 			pinboard->input_buffer = g_string_new(NULL);
-			pinboard->input_tag = gdk_input_add_full(
-					pinboard->from_backdrop_app,
-					GDK_INPUT_READ,
-					(GdkInputFunction) backdrop_from_child,
-					pinboard, NULL);
+			{
+				GIOChannel *channel = g_io_channel_unix_new(
+						pinboard->from_backdrop_app);
+				pinboard->input_tag = g_io_add_watch(
+						channel,
+						G_IO_IN | G_IO_HUP | G_IO_ERR,
+						backdrop_from_child,
+						pinboard);
+				g_io_channel_unref(channel);
+			}
 		}
 		else
 		{
@@ -2598,28 +2696,48 @@ static void reload_backdrop(Pinboard *pinboard,
 		return;
 	}
 
-	/* Note: Copying a style does not ref the pixmaps! */
-
-	style = gtk_style_copy(gtk_widget_get_style(pinboard->window));
-	style->bg_pixmap[GTK_STATE_NORMAL] = NULL;
+	/* Free old backdrop surface */
+	if (backdrop_surface)
+	{
+		cairo_surface_destroy(backdrop_surface);
+		backdrop_surface = NULL;
+	}
 
 	if (backdrop)
-		style->bg_pixmap[GTK_STATE_NORMAL] =
-			load_backdrop(backdrop, backdrop_style);
+		backdrop_surface = load_backdrop(backdrop, backdrop_style);
 
-	gdk_color_parse(o_pinboard_bg_colour.value,
-			&style->bg[GTK_STATE_NORMAL]);
-
-	gtk_widget_set_style(pinboard->window, style);
-
-	g_object_unref(style);
+	/* Set background color */
+	{
+		GdkRGBA bg_color;
+		if (gdk_rgba_parse(&bg_color, o_pinboard_bg_colour.value))
+			widget_set_bg_color(pinboard->window, &bg_color);
+	}
 
 	gtk_widget_queue_draw(pinboard->window);
 
 	/* Also update root window property (for transparent xterms, etc) */
-	if (style->bg_pixmap[GTK_STATE_NORMAL])
+	if (backdrop_surface)
 	{
-		XID id = GDK_DRAWABLE_XID(style->bg_pixmap[GTK_STATE_NORMAL]);
+		Display *dpy = GDK_DISPLAY_XDISPLAY(
+				gtk_widget_get_display(pinboard->window));
+		int pw = cairo_image_surface_get_width(backdrop_surface);
+		int ph = cairo_image_surface_get_height(backdrop_surface);
+		Pixmap xpm = XCreatePixmap(dpy,
+				GDK_WINDOW_XID(
+					gtk_widget_get_window(pinboard->window)),
+				pw, ph,
+				DefaultDepth(dpy, DefaultScreen(dpy)));
+		cairo_surface_t *xlib_surface = cairo_xlib_surface_create(
+				dpy, xpm,
+				DefaultVisual(dpy, DefaultScreen(dpy)),
+				pw, ph);
+		cairo_t *cr2 = cairo_create(xlib_surface);
+		cairo_set_source_surface(cr2, backdrop_surface, 0, 0);
+		cairo_paint(cr2);
+		cairo_destroy(cr2);
+		cairo_surface_destroy(xlib_surface);
+
+		XID id = xpm;
 		gdk_property_change(gdk_get_default_root_window(),
 				gdk_atom_intern("_XROOTPMAP_ID", FALSE),
 				gdk_atom_intern("PIXMAP", FALSE),
@@ -2644,7 +2762,7 @@ static void reload_backdrop(Pinboard *pinboard,
  * Returns the start of the found region in inner/outer, or -1 if there is no
  * free space.
  */
-static void search_free(GdkRectangle *rect, GdkRegion *used,
+static void search_free(GdkRectangle *rect, cairo_region_t *used,
 			int *outer, int od, int omin, int omax,
 			int *inner, int id, int imin, int imax)
 {
@@ -2654,8 +2772,8 @@ static void search_free(GdkRectangle *rect, GdkRegion *used,
 		*inner = id > 0 ? imin : imax;
 		while (*inner >= imin && *inner <= imax)
 		{
-			if (gdk_region_rect_in(used, rect) ==
-					GDK_OVERLAP_RECTANGLE_OUT)
+			if (cairo_region_contains_rectangle(used, rect) ==
+					CAIRO_REGION_OVERLAP_OUT)
 				return;
 			*inner += id;
 		}
@@ -2671,7 +2789,7 @@ static void search_free(GdkRectangle *rect, GdkRegion *used,
  * 'rect'. direction indicates whether to search rows or columns. dx, dy gives
  * the direction of the search.
  */
-static void search_free_area(GdkRectangle *rect, GdkRegion *used,
+static void search_free_area(GdkRectangle *rect, cairo_region_t *used,
 		int direction, int dx, int dy, int x0, int y0, int width, int height)
 {
 	if (direction == DIR_VERT)
@@ -2688,7 +2806,7 @@ static void search_free_area(GdkRectangle *rect, GdkRegion *used,
 	}
 }
 
-static gboolean search_free_xinerama(GdkRectangle *rect, GdkRegion *used,
+static gboolean search_free_xinerama(GdkRectangle *rect, cairo_region_t *used,
 		int direction, int dx, int dy, int rwidth, int rheight)
 {
 	GdkRectangle *geom = &monitor_geom[get_monitor_under_pointer()];
@@ -2708,12 +2826,11 @@ static gboolean search_free_xinerama(GdkRectangle *rect, GdkRegion *used,
 static void find_free_rect(Pinboard *pinboard, GdkRectangle *rect,
 			   gboolean old, int start, int direction)
 {
-	GdkRegion *used;
-	GList *next;
+	cairo_region_t *used;
 	GdkRectangle used_rect;
 	int dx = SEARCH_STEP, dy = SEARCH_STEP;
 
-	used = gdk_region_new();
+	used = cairo_region_create();
 
 	panel_mark_used(used);
 
@@ -2723,18 +2840,18 @@ static void find_free_rect(Pinboard *pinboard, GdkRectangle *rect,
 	{
 		used_rect.x = 0;
 		used_rect.y = 0;
-		used_rect.width = gdk_screen_width();
+		used_rect.width = screen_width;
 		used_rect.height = o_top_margin.int_value;
-		gdk_region_union_with_rect(used, &used_rect);
+		cairo_region_union_rectangle(used, &used_rect);
 	}
 
 	if (o_bottom_margin.int_value > 0)
 	{
 		used_rect.x = 0;
-		used_rect.y = gdk_screen_height() - o_bottom_margin.int_value;
-		used_rect.width = gdk_screen_width();
+		used_rect.y = screen_height - o_bottom_margin.int_value;
+		used_rect.width = screen_width;
 		used_rect.height = o_bottom_margin.int_value;
-		gdk_region_union_with_rect(used, &used_rect);
+		cairo_region_union_rectangle(used, &used_rect);
 	}
 
 	if (o_left_margin.int_value > 0)
@@ -2742,41 +2859,49 @@ static void find_free_rect(Pinboard *pinboard, GdkRectangle *rect,
 		used_rect.x = 0;
 		used_rect.y = 0;
 		used_rect.width = o_left_margin.int_value;
-		used_rect.height = gdk_screen_height();
-		gdk_region_union_with_rect(used, &used_rect);
+		used_rect.height = screen_height;
+		cairo_region_union_rectangle(used, &used_rect);
 	}
 
 	if (o_right_margin.int_value > 0)
 	{
-		used_rect.x = gdk_screen_width() - o_right_margin.int_value;
+		used_rect.x = screen_width - o_right_margin.int_value;
 		used_rect.y = 0;
 		used_rect.width = o_right_margin.int_value;
-		used_rect.height = gdk_screen_height();
-		gdk_region_union_with_rect(used, &used_rect);
+		used_rect.height = screen_height;
+		cairo_region_union_rectangle(used, &used_rect);
 	}
 
 	/* Subtract the used areas... */
 
-	next = GTK_FIXED(pinboard->fixed)->children;
-	for (; next; next = next->next)
 	{
-		GtkFixedChild *fix = (GtkFixedChild *) next->data;
+		GList *children, *l;
 
-		if (!gtk_widget_get_visible(fix->widget))
-			continue;
+		children = gtk_container_get_children(
+				GTK_CONTAINER(pinboard->fixed));
+		for (l = children; l; l = l->next)
+		{
+			GtkWidget *child = GTK_WIDGET(l->data);
+			GtkAllocation child_alloc;
 
-		used_rect.x = fix->x;
-		used_rect.y = fix->y;
-		used_rect.width = fix->widget->requisition.width;
-		used_rect.height = fix->widget->requisition.height;
+			if (!gtk_widget_get_visible(child))
+				continue;
 
-		gdk_region_union_with_rect(used, &used_rect);
+			gtk_widget_get_allocation(child, &child_alloc);
+			used_rect.x = child_alloc.x;
+			used_rect.y = child_alloc.y;
+			used_rect.width = child_alloc.width;
+			used_rect.height = child_alloc.height;
+
+			cairo_region_union_rectangle(used, &used_rect);
+		}
+		g_list_free(children);
 	}
 
 	/* Check the previous area */
 	if(old) {
-		if(gdk_region_rect_in(used, rect)==GDK_OVERLAP_RECTANGLE_OUT) {
-			gdk_region_destroy(used);
+		if(cairo_region_contains_rectangle(used, rect)==CAIRO_REGION_OVERLAP_OUT) {
+			cairo_region_destroy(used);
 			return;
 		}
 	}
@@ -2802,7 +2927,7 @@ static void find_free_rect(Pinboard *pinboard, GdkRectangle *rect,
 			0, 0, screen_width - rect->width, screen_height - rect->height);
 	}
 
-	gdk_region_destroy(used);
+	cairo_region_destroy(used);
 
 	if (rect->x == -1)
 	{
@@ -2820,10 +2945,14 @@ static void pinboard_reshape_icon(Icon *icon)
 	set_size_and_style(pi);
 	offset_from_centre(pi, &x, &y);
 
-	if (pi->win->allocation.x != x || pi->win->allocation.y != y)
 	{
-		fixed_move_fast(GTK_FIXED(current_pinboard->fixed),
-				pi->win, x, y);
+		GtkAllocation win_alloc;
+		gtk_widget_get_allocation(pi->win, &win_alloc);
+		if (win_alloc.x != x || win_alloc.y != y)
+		{
+			fixed_move_fast(GTK_FIXED(current_pinboard->fixed),
+					pi->win, x, y);
+		}
 	}
 
 	/* Newer versions of GTK seem to need this, or the icon doesn't
@@ -2846,7 +2975,7 @@ static void radios_changed(Radios *radios, gpointer data)
 {
 	GObject *dialog = G_OBJECT(data);
 	DropBox *drop_box;
-	const guchar *path;
+	const gchar *path;
 
 	g_return_if_fail(dialog != NULL);
 

@@ -45,10 +45,10 @@ extern GdkAtom xa_application_octet_stream;
 extern GdkAtom xa_string;
 extern FilerWindow *dnd_autoscrollfw;
 
-void drag_selection(GtkWidget *widget, GdkEventMotion *event, guchar *uri_list);
+void drag_selection(GtkWidget *widget, GdkEventMotion *event, gchar *uri_list);
 void drag_one_item(GtkWidget		*widget,
 		   GdkEventMotion	*event,
-		   const guchar		*full_path,
+		   const gchar		*full_path,
 		   DirItem		*item,
 		   MaskedPixmap		*image);
 void drag_data_get(GtkWidget      	*widget,
@@ -57,6 +57,7 @@ void drag_data_get(GtkWidget      	*widget,
 		   guint               	info,
 		   guint32             	time,
 		   gpointer	       	data);
+void dnd_shape_drag_icon(GdkDragContext *context, GdkPixbuf *pixbuf);
 void make_drop_target(GtkWidget *widget, GtkDestDefaults defaults);
 void drag_set_pinboard_dest(GtkWidget *widget);
 void dnd_init(void);
@@ -64,7 +65,7 @@ gboolean provides(GdkDragContext *context, GdkAtom target);
 
 void dnd_spring_load(GdkDragContext *context, FilerWindow *src_win);
 void dnd_spring_abort(void);
-const guchar *dnd_motion_item(GdkDragContext *context, DirItem **item_p);
+const gchar *dnd_motion_item(GdkDragContext *context, DirItem **item_p);
 
 gboolean dnd_motion_press(GtkWidget *widget, GdkEventButton *event);
 void dnd_motion_start(MotionType motion);

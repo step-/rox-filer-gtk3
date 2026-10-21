@@ -1,6 +1,7 @@
 /*
  * ROX-Filer, filer for the ROX desktop project
  * Copyright (C) 2006, Thomas Leonard and others (see changelog for details).
+ * Copyright (C) 2026, step <step.commons@gmail.com>.
  *
  * The collection widget provides an area for displaying a collection of
  * objects (such as files). It allows the user to choose a selection of
@@ -33,6 +34,8 @@
 #include "collection.h"
 #include "filer.h"
 #include "options.h"
+#include "gui_support.h"
+#include "view_utils.h"
 
 #define MIN_WIDTH 80
 #define MIN_HEIGHT 60
@@ -86,15 +89,20 @@ static GtkWidgetClass *parent_class = NULL;
 /* Static prototypes */
 static void draw_one_item(Collection 	*collection,
 			  int 		item,
-			  GdkRectangle 	*area);
+			  GdkRectangle 	*area,
+			  cairo_t	*cr);
 static void collection_class_init(GObjectClass *gclass, gpointer data);
 static void collection_init(GTypeInstance *object, gpointer g_class);
-static void collection_destroy(GtkObject *object);
+static void collection_dispose(GObject *object);
 static void collection_finalize(GObject *object);
 static void collection_realize(GtkWidget *widget);
 static void collection_map(GtkWidget *widget);
-static void collection_size_request(GtkWidget 		*widget,
-				    GtkRequisition 	*requisition);
+static void collection_get_preferred_width(GtkWidget *widget,
+					   gint *minimum_width,
+					   gint *natural_width);
+static void collection_get_preferred_height(GtkWidget *widget,
+					    gint *minimum_height,
+					    gint *natural_height);
 static void collection_size_allocate(GtkWidget 		*widget,
 			     GtkAllocation 	*allocation);
 static void collection_set_adjustment(Collection 	*collection,
@@ -107,12 +115,13 @@ static void collection_set_property(GObject      *object,
 				    guint        prop_id,
 				    const GValue *value,
 				    GParamSpec   *pspec);
-static gint collection_expose(GtkWidget *widget, GdkEventExpose *event);
+static gboolean collection_draw(GtkWidget *widget, cairo_t *cr);
 static void default_draw_item(GtkWidget *widget,
 				int idx,
 				GdkRectangle *area,
 				gpointer user_data,
-				gboolean cursor);
+				gboolean cursor,
+				cairo_t *cr);
 static gboolean	default_test_point(Collection *collection,
 				   int point_x, int point_y,
 				   CollectionItem *data,
@@ -160,15 +169,18 @@ static inline int collection_get_cols(const Collection *collection)
 		return collection->columns;
 }
 
-static void draw_one_item(Collection *collection, int item, GdkRectangle *area)
+static void draw_one_item(Collection *collection, int item, GdkRectangle *area, cairo_t *cr)
 {
 	if (item < collection->number_of_items)
 	{
+		cairo_save(cr);
 		collection->draw_item((GtkWidget *) collection,
 				item,
 				area,
 				collection->cb_user_data,
-				item == collection->cursor_item);
+				item == collection->cursor_item,
+				cr);
+		cairo_restore(cr);
 	}
 }
 
@@ -203,18 +215,17 @@ typedef void (*FinalizeFn)(GObject *object);
 static void collection_class_init(GObjectClass *gclass, gpointer data)
 {
 	CollectionClass *collection_class = (CollectionClass *) gclass;
-	GtkObjectClass *object_class = (GtkObjectClass *) gclass;
 	GtkWidgetClass *widget_class = (GtkWidgetClass *) gclass;
 
 	parent_class = g_type_class_ref(gtk_widget_get_type());
 
-	object_class->destroy = collection_destroy;
-	G_OBJECT_CLASS(object_class)->finalize =
-		(FinalizeFn) collection_finalize;
+	gclass->dispose = collection_dispose;
+	gclass->finalize = collection_finalize;
 
 	widget_class->realize = collection_realize;
-	widget_class->expose_event = collection_expose;
-	widget_class->size_request = collection_size_request;
+	widget_class->draw = collection_draw;
+	widget_class->get_preferred_width = collection_get_preferred_width;
+	widget_class->get_preferred_height = collection_get_preferred_height;
 	widget_class->size_allocate = collection_size_allocate;
 
 	widget_class->key_press_event = collection_key_press;
@@ -222,6 +233,8 @@ static void collection_class_init(GObjectClass *gclass, gpointer data)
 	widget_class->motion_notify_event = collection_motion_notify;
 	widget_class->map = collection_map;
 	widget_class->scroll_event = collection_scroll_event;
+
+	gtk_widget_class_set_css_name(widget_class, "Collection");
 
 	gclass->set_property = collection_set_property;
 	gclass->get_property = collection_get_property;
@@ -308,14 +321,11 @@ GtkWidget* collection_new(void)
 }
 
 /* After this we are unusable, but our data (if any) is still hanging around.
- * It will be freed later with finalize.
+ * It will be freed later with finalize. Drop references here.
  */
-static void collection_destroy(GtkObject *object)
+static void collection_dispose(GObject *object)
 {
 	Collection *collection;
-
-	g_return_if_fail(object != NULL);
-	g_return_if_fail(IS_COLLECTION(object));
 
 	collection = COLLECTION(object);
 
@@ -327,8 +337,8 @@ static void collection_destroy(GtkObject *object)
 		collection->vadj = NULL;
 	}
 
-	if (GTK_OBJECT_CLASS(parent_class)->destroy)
-		(*GTK_OBJECT_CLASS(parent_class)->destroy)(object);
+	if (G_OBJECT_CLASS(parent_class)->dispose)
+		G_OBJECT_CLASS(parent_class)->dispose(object);
 }
 
 /* This is the last thing that happens to us. Free all data. */
@@ -363,32 +373,23 @@ static void collection_map(GtkWidget *widget)
 	collection->center_wink = FALSE;
 }
 
-static void style_set_cb(GtkWidget *widget,
-	GtkStyle *previous_style, gpointer user_data)
-{
-	gdk_window_set_background(widget->window,
-			&widget->style->base[GTK_STATE_NORMAL]);
-}
-
 static void collection_realize(GtkWidget *widget)
 {
-	Collection 	*collection;
 	GdkWindowAttr 	attributes;
 	gint 		attributes_mask;
-	GdkGCValues	xor_values;
-	GdkColor	*bg, *fg;
+	GtkAllocation 	alloc;
 
 	g_return_if_fail(widget != NULL);
 	g_return_if_fail(IS_COLLECTION(widget));
-	g_return_if_fail(widget->parent != NULL);
+	g_return_if_fail(gtk_widget_get_parent(widget) != NULL);
 
 	gtk_widget_set_realized(widget, TRUE);
-	collection = COLLECTION(widget);
 
-	attributes.x = widget->allocation.x;
-	attributes.y = widget->allocation.y;
-	attributes.width = widget->allocation.width;
-	attributes.height = widget->allocation.height;
+	gtk_widget_get_allocation(widget, &alloc);
+	attributes.x = alloc.x;
+	attributes.y = alloc.y;
+	attributes.width = alloc.width;
+	attributes.height = alloc.height;
 	attributes.wclass = GDK_INPUT_OUTPUT;
 	attributes.window_type = GDK_WINDOW_CHILD;
 	attributes.event_mask = gtk_widget_get_events(widget) |
@@ -397,43 +398,32 @@ static void collection_realize(GtkWidget *widget)
 		GDK_BUTTON1_MOTION_MASK | GDK_BUTTON2_MOTION_MASK |
 		GDK_BUTTON3_MOTION_MASK;
 	attributes.visual = gtk_widget_get_visual(widget);
-	attributes.colormap = gtk_widget_get_colormap(widget);
 
 	attributes_mask = GDK_WA_X | GDK_WA_Y |
-				GDK_WA_VISUAL | GDK_WA_COLORMAP;
-	widget->window = gdk_window_new(gtk_widget_get_parent_window(widget),
-			&attributes, attributes_mask);
+				GDK_WA_VISUAL;
+	gtk_widget_set_window(widget, gdk_window_new(gtk_widget_get_parent_window(widget),
+			&attributes, attributes_mask));
 
-	widget->style = gtk_style_attach(widget->style, widget->window);
-
-	gdk_window_set_user_data(widget->window, widget);
-
-	style_set_cb(widget, NULL, NULL);
-	g_signal_connect(widget, "style_set",
-			G_CALLBACK(style_set_cb), NULL);
-
-	bg = &widget->style->base[GTK_STATE_NORMAL];
-	fg = &widget->style->text[GTK_STATE_NORMAL];
-	xor_values.function = GDK_XOR;
-	xor_values.foreground.pixel = fg->pixel ^ bg->pixel;
-	collection->xor_gc = gdk_gc_new_with_values(widget->window,
-					&xor_values,
-					GDK_GC_FOREGROUND
-					| GDK_GC_FUNCTION);
+	gdk_window_set_user_data(gtk_widget_get_window(widget), widget);
 }
 
-static void collection_size_request(GtkWidget *widget,
-				GtkRequisition *requisition)
+static void collection_get_preferred_width(GtkWidget *widget,
+					   gint *minimum_width,
+					   gint *natural_width)
+{
+	*minimum_width = MIN_WIDTH;
+	*natural_width = MIN_WIDTH;
+}
+
+static void collection_get_preferred_height(GtkWidget *widget,
+					    gint *minimum_height,
+					    gint *natural_height)
 {
 	Collection *collection = COLLECTION(widget);
-	int	rows;
-
-	/* We ask for the total size we need; our containing viewport
-	 * will deal with scrolling.
-	 */
-	requisition->width = MIN_WIDTH;
-	rows = collection_get_rows(collection);
-	requisition->height = rows * collection->item_height;
+	int rows = collection_get_rows(collection);
+	int height = rows * collection->item_height;
+	*minimum_height = height;
+	*natural_height = height;
 }
 
 static gboolean scroll_after_alloc(Collection *collection)
@@ -478,7 +468,7 @@ static void collection_size_allocate(GtkWidget *widget,
 
 	old_columns = collection->columns;
 
-	widget->allocation = *allocation;
+	gtk_widget_set_allocation(widget, allocation);
 
 	collection->columns = allocation->width / collection->item_width;
 	if (collection->columns < 1)
@@ -486,7 +476,7 @@ static void collection_size_allocate(GtkWidget *widget,
 
 	if (gtk_widget_get_realized(widget))
 	{
-		gdk_window_move_resize(widget->window,
+		gdk_window_move_resize(gtk_widget_get_window(widget),
 				allocation->x, allocation->y,
 				allocation->width, allocation->height);
 
@@ -495,7 +485,7 @@ static void collection_size_allocate(GtkWidget *widget,
 	}
 
 	if (collection->old_pos != 0 &&
-		collection->vadj->value > 0
+		gtk_adjustment_get_value(collection->vadj) > 0
 	){
 		if (collection->winks_left > 0)
 			collection->winks_left += MAX_WINKS - 1;
@@ -503,10 +493,10 @@ static void collection_size_allocate(GtkWidget *widget,
 		gtk_adjustment_set_value(collection->vadj,
 			CLAMP(
 				(allocation->height / collection->old_height) *
-				(collection->old_pos + collection->vadj->page_size * 3/7) -
-				collection->vadj->page_size * 3/7,
+				(collection->old_pos + gtk_adjustment_get_page_size(collection->vadj) * 3/7) -
+				gtk_adjustment_get_page_size(collection->vadj) * 3/7,
 				0,
-				allocation->height - collection->vadj->page_size));
+				allocation->height - gtk_adjustment_get_page_size(collection->vadj)));
 
 		collection->old_height = collection->old_pos = 0;
 		gtk_widget_queue_draw(widget);
@@ -516,12 +506,13 @@ static void collection_size_allocate(GtkWidget *widget,
 	if (old_columns != collection->columns)
 	{
 		collection->old_height = allocation->height;
-		collection->old_pos = collection->vadj->value;
+		collection->old_pos = gtk_adjustment_get_value(collection->vadj);
 
 		/* Need to go around again... */
 		gtk_widget_queue_resize(widget);
 	}
-	else if (collection->wink_item != -1 || collection->cursor_item != -1)
+	else if (collection->wink_item != -1
+			|| (collection->cursor_item != -1 && cursor_visible)) /* [20260910150134] */
 	{
 		/* Viewport resets the adjustments after the alloc */
 		g_object_ref(G_OBJECT(collection));
@@ -548,7 +539,7 @@ static void collection_get_item_area(Collection *collection,
 		area->width <<= 1;
 }
 
-static gint collection_expose(GtkWidget *widget, GdkEventExpose *event)
+static gboolean collection_draw(GtkWidget *widget, cairo_t *cr)
 {
 	Collection	*collection;
 	GdkRectangle	item_area;
@@ -557,35 +548,39 @@ static gint collection_expose(GtkWidget *widget, GdkEventExpose *event)
 	int		start_row, last_row;
 	int		start_col, last_col;
 	int		phys_last_col;
+	gdouble x1, y1, x2, y2;
+	GdkRectangle clip_area;
 
 	g_return_val_if_fail(widget != NULL, FALSE);
 	g_return_val_if_fail(IS_COLLECTION(widget), FALSE);
-	g_return_val_if_fail(event != NULL, FALSE);
 
-	/* Note about 'detail' argument:
-	 * - If set to "base", lighthouse theme will crash
-	 * - If set to NULL, cleanice theme will crash
-	 *
-	 * Clear the background only if we have a background pixmap.
-	 */
-	if (widget->style->bg_pixmap[GTK_STATE_NORMAL])
-		gtk_paint_flat_box(widget->style, widget->window, GTK_STATE_NORMAL,
-				   GTK_SHADOW_NONE, &event->area,
-				   widget, "collection", 0, 0, -1, -1);
+	{
+		GtkStyleContext *ctx = gtk_widget_get_style_context(widget);
+		gtk_render_background(ctx, cr, 0, 0,
+			gtk_widget_get_allocated_width(widget),
+			gtk_widget_get_allocated_height(widget));
+	}
+	cairo_set_operator(cr, CAIRO_OPERATOR_OVER);
 
 	collection = COLLECTION(widget);
 	if (collection->item_width == 1) return FALSE;
 
+	cairo_clip_extents(cr, &x1, &y1, &x2, &y2);
+	clip_area.x = (int) x1;
+	clip_area.y = (int) y1;
+	clip_area.width = (int) (x2 - x1);
+	clip_area.height = (int) (y2 - y1);
+
 	/* Calculate the ranges to plot */
-	start_row = event->area.y / collection->item_height;
-	last_row = (event->area.y + event->area.height - 1)
+	start_row = clip_area.y / collection->item_height;
+	last_row = (clip_area.y + clip_area.height - 1)
 		   / collection->item_height;
 
 	if (last_row >= collection_get_rows(collection))
 		last_row = collection_get_rows(collection) - 1;
 
-	start_col = event->area.x / collection->item_width;
-	phys_last_col = (event->area.x + event->area.width - 1)
+	start_col = clip_area.x / collection->item_width;
+	phys_last_col = (clip_area.x + clip_area.width - 1)
 			/ collection->item_width;
 
 	/* The right-most column may be wider than the others.
@@ -600,8 +595,6 @@ static gint collection_expose(GtkWidget *widget, GdkEventExpose *event)
 	else
 		last_col = phys_last_col;
 
-//	gint64 start_time = g_get_real_time();
-
 	for(row = start_row; row <= last_row; row++)
 		for(col = start_col; col <= last_col; col++)
 		{
@@ -609,15 +602,22 @@ static gint collection_expose(GtkWidget *widget, GdkEventExpose *event)
 			if (item == 0 || item < collection->number_of_items) {
 				collection_get_item_area(collection,
 						row, col, &item_area);
-				draw_one_item(collection, item, &item_area);
+				draw_one_item(collection, item, &item_area, cr);
 			}
 		}
 
-//	g_print("expose row %d-%d, col %d-%d time : %li\n",
-//			start_row, last_row, start_col, last_col, g_get_real_time() - start_time);
-
 	if (collection->lasso_box)
-		draw_lasso_box(collection);
+	{
+		int x, y, width, height;
+
+		x = MIN(collection->drag_box_x[0], collection->drag_box_x[1]);
+		y = MIN(collection->drag_box_y[0], collection->drag_box_y[1]);
+		width = abs(collection->drag_box_x[1] - collection->drag_box_x[0]);
+		height = abs(collection->drag_box_y[1] - collection->drag_box_y[0]);
+
+		if (width && height)
+			view_utils_draw_rubberband(widget, cr, x, y, width, height);
+	}
 
 	return FALSE;
 }
@@ -627,33 +627,22 @@ static void default_draw_item(
 		int idx,
 		GdkRectangle *area,
 		gpointer user_data,
-		gboolean cursor)
+		gboolean cursor,
+		cairo_t *cr)
 {
-	gdk_draw_arc(widget->window,
-			COLLECTION(widget)->items[idx].selected ?
-				widget->style->white_gc :
-				widget->style->black_gc,
-			TRUE,
-			area->x, area->y,
-			COLLECTION(widget)->item_width, area->height,
-			0, 360 * 64);
-
-	GtkStateType	state;
-
-	if (gtk_widget_has_focus(widget))
-		state = GTK_STATE_ACTIVE;
-	else
-		state = GTK_STATE_INSENSITIVE;
-
-	gtk_paint_focus(widget->style,
-			widget->window,
-			state,
-			NULL,
-			widget,
-			"collection",
-			area->x, area->y,
-			area->width,
-			area->height);
+	GdkRGBA color;
+	GtkStyleContext *ctx = gtk_widget_get_style_context(widget);
+	if (COLLECTION(widget)->items[idx].selected) {
+		gtk_style_context_get_color(ctx, GTK_STATE_FLAG_SELECTED, &color);
+	} else {
+		gtk_style_context_get_color(ctx, GTK_STATE_NORMAL, &color);
+	}
+	cairo_set_source_rgb(cr, color.red, color.green, color.blue);
+	cairo_arc(cr, area->x + COLLECTION(widget)->item_width / 2.0,
+		  area->y + area->height / 2.0,
+		  MIN(COLLECTION(widget)->item_width, area->height) / 2.0,
+		  0, 2 * G_PI);
+	cairo_fill(cr);
 }
 
 
@@ -711,7 +700,7 @@ static void collection_set_adjustment(Collection    *collection,
 		g_object_unref(G_OBJECT(collection->vadj));
 
 	collection->vadj = vadj;
-	g_object_ref_sink(GTK_OBJECT(collection->vadj));
+	g_object_ref_sink(collection->vadj);
 }
 
 static void collection_get_property(GObject    *object,
@@ -760,10 +749,10 @@ static gint collection_key_press(GtkWidget *widget, GdkEventKey *event)
 	key = event->keyval;
 	if (event->state & (GDK_CONTROL_MASK | GDK_SHIFT_MASK))
 	{
-		if (key == GDK_Left || key == GDK_KEY_KP_Left || \
-			key == GDK_Right || key == GDK_KEY_KP_Right || \
-			key == GDK_Up || key == GDK_KEY_KP_Up || \
-			key == GDK_Down || key == GDK_KEY_KP_Down)
+		if (key == GDK_KEY_Left || key == GDK_KEY_KP_Left || \
+			key == GDK_KEY_Right || key == GDK_KEY_KP_Right || \
+			key == GDK_KEY_Up || key == GDK_KEY_KP_Up || \
+			key == GDK_KEY_Down || key == GDK_KEY_KP_Down)
 		{ /* nothing */ }
 		else
 			return FALSE;
@@ -771,33 +760,33 @@ static gint collection_key_press(GtkWidget *widget, GdkEventKey *event)
 
 	switch (key)
 	{
-		case GDK_Left:
+		case GDK_KEY_Left:
 		case GDK_KEY_KP_Left:
 			collection_move_cursor(collection, 0, -1, event->state);
 			break;
-		case GDK_Right:
+		case GDK_KEY_Right:
 		case GDK_KEY_KP_Right:
 			collection_move_cursor(collection, 0, 1, event->state);
 			break;
-		case GDK_Up:
+		case GDK_KEY_Up:
 		case GDK_KEY_KP_Up:
 			collection_move_cursor(collection, -1, 0, event->state);
 			break;
-		case GDK_Down:
+		case GDK_KEY_Down:
 		case GDK_KEY_KP_Down:
 			collection_move_cursor(collection, 1, 0, event->state);
 			break;
-		case GDK_Home:
+		case GDK_KEY_Home:
 		case GDK_KEY_KP_Home:
 			collection_set_cursor_item(collection, 0, TRUE);
 			break;
-		case GDK_End:
+		case GDK_KEY_End:
 		case GDK_KEY_KP_End:
 			collection_set_cursor_item(collection,
 				MAX((gint) collection->number_of_items - 1, 0),
 				TRUE);
 			break;
-		case GDK_Page_Up:
+		case GDK_KEY_Page_Up:
 		case GDK_KEY_KP_Page_Up:
 		  {
 		        int first, last;
@@ -805,7 +794,7 @@ static gint collection_key_press(GtkWidget *widget, GdkEventKey *event)
 			collection_move_cursor(collection, first - last, 0, 0);
 			break;
 		  }
-		case GDK_Page_Down:
+		case GDK_KEY_Page_Down:
 		case GDK_KEY_KP_Page_Down:
 		  {
 		        int first, last;
@@ -828,15 +817,15 @@ static gboolean scroll_idle(gpointer data) {
 
 	if (collection->vadj && diff)
 	{
-		int	old_value = collection->vadj->value;
+		int	old_value = gtk_adjustment_get_value(collection->vadj);
 		int	new_value = 0;
 		gboolean box = collection->lasso_box;
 
-		int	step = collection->vadj->page_increment / o_scroll_speed.int_value;
+		int	step = gtk_adjustment_get_page_increment(collection->vadj) / o_scroll_speed.int_value;
 
 		new_value = CLAMP(old_value + diff * step, 0.0,
-				collection->vadj->upper
-				- collection->vadj->page_size);
+				gtk_adjustment_get_upper(collection->vadj)
+				- gtk_adjustment_get_page_size(collection->vadj));
 		diff = new_value - old_value;
 		if (diff)
 		{
@@ -969,7 +958,7 @@ static void find_lasso_area(Collection *collection, GdkRectangle *area)
 
 static void collection_process_area(Collection	 *collection,
 				    GdkRectangle *area,
-				    GdkFunction  fn,
+				    GdkFunction   fn,
 				    guint32	 time)
 {
 	int		x, y;
@@ -1037,8 +1026,8 @@ static gint collection_motion_notify(GtkWidget *widget,
 	if (!collection->lasso_box)
 		return FALSE;
 
-	if (event->window != widget->window)
-		gdk_window_get_pointer(widget->window, &x, &y, NULL);
+	if (event->window != gtk_widget_get_window(widget))
+		gui_get_pointer(gtk_widget_get_window(widget), &x, &y, NULL);
 	else
 	{
 		x = event->x;
@@ -1074,12 +1063,8 @@ static void draw_lasso_box(Collection *collection)
 	width = abs(collection->drag_box_x[1] - collection->drag_box_x[0]);
 	height = abs(collection->drag_box_y[1] - collection->drag_box_y[0]);
 
-	/* XXX: A redraw bug sometimes leaves a one-pixel dot on the screen.
-	 * As a quick hack, don't draw boxes that small for now...
-	 */
 	if (width || height)
-		gdk_draw_rectangle(widget->window, collection->xor_gc, FALSE,
-			x, y, width, height);
+		gtk_widget_queue_draw_area(widget, x, y, width, height);
 }
 
 static void abort_lasso(Collection *collection)
@@ -1112,9 +1097,11 @@ static void scroll_to_show(Collection *collection, int item)
 	collection_item_to_rowcol(collection, item, &row, &col);
 	if (collection->center_wink)
 	{
+		GtkAllocation alloc;
+		gtk_widget_get_allocation(GTK_WIDGET(collection), &alloc);
 		gtk_adjustment_set_value(collection->vadj, MIN(
-			row * collection->item_height - (collection->vadj->page_size - collection->item_height) * 3/7,
-			GTK_WIDGET(collection)->allocation.height - collection->vadj->page_size
+			row * collection->item_height - (gtk_adjustment_get_page_size(collection->vadj) - collection->item_height) * 3/7,
+			alloc.height - gtk_adjustment_get_page_size(collection->vadj)
 		));
 		return;
 	}
@@ -1132,7 +1119,7 @@ static void scroll_to_show(Collection *collection, int item)
 
 		if (gtk_widget_get_realized(widget))
 		{
-			height = collection->vadj->page_size;
+			height = gtk_adjustment_get_page_size(collection->vadj);
 			gtk_adjustment_set_value(collection->vadj,
 				(row + 1) * collection->item_height - height);
 		}
@@ -1158,8 +1145,8 @@ static void get_visible_limits(Collection *collection, int *first, int *last)
 	}
 	else
 	{
-		scroll = collection->vadj->value;
-		height = collection->vadj->page_size;
+		scroll = gtk_adjustment_get_value(collection->vadj);
+		height = gtk_adjustment_get_page_size(collection->vadj);
 
 		*first = MAX(scroll / collection->item_height, 0);
 		*last = (scroll + height - 1) /collection->item_height;
@@ -1183,10 +1170,14 @@ static void cancel_wink(Collection *collection)
 	collection->wink_item = -1;
 	g_source_remove(collection->wink_timeout);
 
+	gtk_style_context_remove_class(
+		gtk_widget_get_style_context(GTK_WIDGET(collection)),
+		"wink-outline");
+
 	collection_draw_item(collection, item, TRUE);
 }
 
-/* Draw/undraw a box around collection->wink_item */
+/* Invalidate the area around collection->wink_item for redraw */
 static void invert_wink(Collection *collection)
 {
 	GdkRectangle area;
@@ -1194,20 +1185,13 @@ static void invert_wink(Collection *collection)
 
 	g_return_if_fail(collection->wink_item >= 0);
 
-	if (!gtk_widget_get_realized(GTK_WIDGET(collection)))
-		return;
-
 	collection_item_to_rowcol(collection, collection->wink_item,
 				  &row, &col);
 	collection_get_item_area(collection, row, col, &area);
 
-	gdk_draw_rectangle(((GtkWidget *) collection)->window,
-			collection->xor_gc, FALSE,
-			area.x, area.y,
-			collection->item_width - 1,
-			area.height - 1);
-
-	gdk_flush();
+	gtk_widget_queue_draw_area(GTK_WIDGET(collection),
+				  area.x, area.y,
+				  area.width, area.height);
 }
 
 static gboolean wink_timeout(Collection *collection)
@@ -1227,6 +1211,10 @@ static gboolean wink_timeout(Collection *collection)
 	}
 
 	collection->wink_item = -1;
+
+	gtk_style_context_remove_class(
+		gtk_widget_get_style_context(GTK_WIDGET(collection)),
+		"wink-outline");
 
 	collection_draw_item(collection, item, TRUE);
 
@@ -1451,7 +1439,7 @@ void collection_draw_item(Collection *collection, gint item, gboolean blank)
 
 	collection_get_item_area(collection, row, col, &area);
 
-	gdk_window_invalidate_rect(widget->window, &area, FALSE);
+	gtk_widget_queue_draw_area(widget, area.x, area.y, area.width, area.height);
 }
 
 void collection_set_item_size(Collection *collection, int width, int height)
@@ -1475,7 +1463,7 @@ void collection_set_item_size(Collection *collection, int width, int height)
 	{
 		int window_width;
 
-		window_width = gdk_window_get_width(widget->window);
+		window_width = gdk_window_get_width(gtk_widget_get_window(widget));
 		collection->columns = MAX(window_width / collection->item_width,
 					  1);
 		if (collection->cursor_item != -1)
@@ -1483,8 +1471,12 @@ void collection_set_item_size(Collection *collection, int width, int height)
 		gtk_widget_queue_draw(widget);
 	}
 
-	collection->old_height = GTK_WIDGET(collection)->allocation.height;
-	collection->old_pos = collection->vadj->value;
+	{
+		GtkAllocation alloc;
+		gtk_widget_get_allocation(GTK_WIDGET(collection), &alloc);
+		collection->old_height = alloc.height;
+	}
+	collection->old_pos = gtk_adjustment_get_value(collection->vadj);
 	gtk_widget_queue_resize(GTK_WIDGET(collection));
 }
 
@@ -1547,6 +1539,9 @@ void collection_qsort(Collection *collection,
 	{
 		wink_data = collection->items[wink].data;
 		collection->wink_item = -1;
+		gtk_style_context_remove_class(
+			gtk_widget_get_style_context(GTK_WIDGET(collection)),
+			"wink-outline");
 	}
 	else
 		wink = -1;
@@ -1578,6 +1573,10 @@ void collection_qsort(Collection *collection,
 			{
 				collection->cursor_item_old = item;
 				collection->wink_item = item;
+				gtk_style_context_add_class(
+					gtk_widget_get_style_context(
+					(GTK_WIDGET(collection))),
+					"wink-outline");
 				scroll_to_show(collection, item);
 			}
 		}
@@ -1723,6 +1722,10 @@ void collection_wink_item(Collection *collection, gint item)
 	collection->cursor_item_old = collection->wink_item = item;
 	collection->winks_left = MAX_WINKS;
 
+	gtk_style_context_add_class(
+		gtk_widget_get_style_context(GTK_WIDGET(collection)),
+		"wink-outline");
+
 	collection->wink_timeout = g_timeout_add(70,
 					   (GSourceFunc) wink_timeout,
 					   collection);
@@ -1791,6 +1794,10 @@ void collection_delete_if(Collection *collection,
 		{
 			collection->wink_item = -1;
 			g_source_remove(collection->wink_timeout);
+			gtk_style_context_remove_class(
+				gtk_widget_get_style_context(
+				(GTK_WIDGET(collection))),
+				"wink-outline");
 		}
 
 		collection->number_of_items = out;

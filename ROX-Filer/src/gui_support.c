@@ -1,6 +1,7 @@
 /*
  * ROX-Filer, filer for the ROX desktop project
  * Copyright (C) 2006, Thomas Leonard and others (see changelog for details).
+ * Copyright (C) 2026, step <step.commons@gmail.com>.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the Free
@@ -44,6 +45,7 @@
 #include "choices.h"
 #include "options.h"
 #include "run.h"
+#include "filer.h"
 
 gint	screen_width, screen_height;
 
@@ -60,6 +62,41 @@ GdkAtom xa__NET_NUMBER_OF_DESKTOPS = GDK_NONE;
 
 static GtkWidget *current_dialog = NULL;
 
+/* Topmost open prompt (error/info popup, replace confirm, unmount question),
+ * so a later prompt such as the --exit confirmation can parent to the window
+ * that actually has the user's attention instead of a stale filer window.
+ * Cleared automatically when the dialog is destroyed. [20260919080217]
+ */
+static GtkWidget *current_modal_dialog = NULL;
+
+static void current_modal_dialog_gone(gpointer data, GObject *gone)
+{
+	if (current_modal_dialog == (GtkWidget *) gone)
+		current_modal_dialog = NULL;
+}
+
+/* Remember a visible prompt as the transient parent for prompts that open
+ * on top of it. Replaces any previous registration.
+ */
+void rox_dialog_note_modal(GtkWidget *dialog)
+{
+	g_return_if_fail(GTK_IS_WINDOW(dialog));
+
+	if (current_modal_dialog == dialog)
+		return;
+
+	if (current_modal_dialog)
+	{
+		g_object_weak_unref(G_OBJECT(current_modal_dialog),
+				current_modal_dialog_gone,
+				current_modal_dialog);
+	}
+
+	current_modal_dialog = dialog;
+	g_object_weak_ref(G_OBJECT(dialog),
+			current_modal_dialog_gone, dialog);
+}
+
 static GtkWidget *tip_widget = NULL;
 static time_t tip_time = 0; 	/* Time tip widget last closed */
 static gint tip_timeout = 0;	/* When primed */
@@ -73,30 +110,42 @@ static void gui_get_monitor_adjacent(int monitor, MonitorAdjacent *adj);
 void gui_store_screen_geometry(GdkScreen *screen)
 {
 	gint mon;
-
-	screen_width = gdk_screen_get_width(screen);
-	screen_height = gdk_screen_get_height(screen);
+	GdkDisplay *display = gdk_display_get_default();
+	GdkMonitor *prim = gdk_display_get_primary_monitor(display);
 
 	if (monitor_adjacent)
 		g_free(monitor_adjacent);
 
 	monitor_width = monitor_height = G_MAXINT;
-	n_monitors = gdk_screen_get_n_monitors(screen);
+	n_monitors = gdk_display_get_n_monitors(display);
 	if (monitor_geom)
 		g_free(monitor_geom);
 	monitor_geom = g_new(GdkRectangle, n_monitors ? n_monitors : 1);
 
 	if (n_monitors)
 	{
+		int min_x = G_MAXINT, min_y = G_MAXINT;
+		int max_x = 0, max_y = 0;
+
 		for (mon = 0; mon < n_monitors; ++mon)
 		{
-			gdk_screen_get_monitor_geometry(screen, mon,
+			gdk_monitor_get_geometry(gdk_display_get_monitor(display, mon),
 					&monitor_geom[mon]);
 			if (monitor_geom[mon].width < monitor_width)
 				monitor_width = monitor_geom[mon].width;
 			if (monitor_geom[mon].height < monitor_height)
 				monitor_height = monitor_geom[mon].height;
+			if (monitor_geom[mon].x < min_x)
+				min_x = monitor_geom[mon].x;
+			if (monitor_geom[mon].y < min_y)
+				min_y = monitor_geom[mon].y;
+			if (monitor_geom[mon].x + monitor_geom[mon].width > max_x)
+				max_x = monitor_geom[mon].x + monitor_geom[mon].width;
+			if (monitor_geom[mon].y + monitor_geom[mon].height > max_y)
+				max_y = monitor_geom[mon].y + monitor_geom[mon].height;
 		}
+		screen_width = max_x - min_x;
+		screen_height = max_y - min_y;
 		monitor_adjacent = g_new(MonitorAdjacent, n_monitors);
 		for (mon = 0; mon < n_monitors; ++mon)
 		{
@@ -106,9 +155,11 @@ void gui_store_screen_geometry(GdkScreen *screen)
 	else
 	{
 		n_monitors = 1;
-		monitor_geom[0].x = monitor_geom[0].y = 0;
-		monitor_width = monitor_geom[0].width = screen_width;
-		monitor_height = monitor_geom[0].height = screen_height;
+		gdk_monitor_get_geometry(prim, &monitor_geom[0]);
+		screen_width = monitor_geom[0].width;
+		screen_height = monitor_geom[0].height;
+		monitor_width = monitor_geom[0].width;
+		monitor_height = monitor_geom[0].height;
 		monitor_adjacent = g_new0(MonitorAdjacent, 1);
 	}
 
@@ -132,6 +183,22 @@ void gui_support_init()
 	klass = g_type_class_ref(gtk_scrolled_window_get_type());
 	((GtkScrolledWindowClass *) klass)->scrollbar_spacing = 0;
 	/* (don't unref, ever) */
+}
+
+/*
+ * GTK3 has no stock text for icon names, so when a caller passes NULL text
+ * we supply the standard localized label for the handful of icons used that
+ * way. Pass the icon name through unchanged if there is no known label.
+ */
+static const gchar *stock_label_for_icon(const gchar *stock)
+{
+	if (!strcmp(stock, "process-stop"))
+		return _("_Cancel");
+	if (!strcmp(stock, "edit-delete"))
+		return _("_Delete");
+	if (!strcmp(stock, "window-close"))
+		return _("_Close");
+	return stock;
 }
 
 /* Open a modal dialog box showing a message.
@@ -158,6 +225,7 @@ int get_choice(const char *title,
 	{
 		gtk_widget_hide(current_dialog);
 		gtk_widget_show(current_dialog);
+		gtk_window_present(GTK_WINDOW(current_dialog)); /* [20260917083050] */
 		return -1;
 	}
 
@@ -166,6 +234,21 @@ int get_choice(const char *title,
 					GTK_MESSAGE_QUESTION,
 					GTK_BUTTONS_NONE,
 					"%s", message);
+	rox_dialog_set_parent_full(dialog, TRUE);
+	/* [20260917083050] Block --exit while asking, without changing
+	 * destroy-with-parent; never dangle current_dialog for nested
+	 * re-entry after an external destroy. */
+	rox_dialog_block_exit(dialog);
+	g_signal_connect(dialog, "destroy",
+			G_CALLBACK(gtk_widget_destroyed), &current_dialog);
+	/* [20260919080217] Parent to the prompt that actually has the user's
+	 * attention (e.g. an error popup) instead of a stale filer window,
+	 * so it stacks above the parent. */
+	if (current_modal_dialog && current_modal_dialog != dialog)
+	{
+		gtk_window_set_transient_for(GTK_WINDOW(dialog),
+				GTK_WINDOW(current_modal_dialog));
+	}
 	gtk_window_set_position(GTK_WINDOW(dialog), GTK_WIN_POS_CENTER);
 
 	va_start(ap, number_of_buttons);
@@ -178,7 +261,8 @@ int get_choice(const char *title,
 		if (text)
 			button = button_new_mixed(stock, text);
 		else
-			button = gtk_button_new_from_stock(stock);
+			button = button_new_mixed(stock,
+					stock_label_for_icon(stock));
 
 		gtk_widget_set_can_default(button, TRUE);
 		gtk_widget_show(button);
@@ -193,6 +277,12 @@ int get_choice(const char *title,
 	gtk_dialog_set_default_response(GTK_DIALOG(dialog), i - 1);
 
 	va_end(ap);
+
+	/* Show before present: present() on an unmapped window is a
+	 * no-op, and gtk_dialog_run() would otherwise show it without
+	 * ever requesting focus. [20260917083050] */
+	gtk_widget_show(dialog);
+	gtk_window_present(GTK_WINDOW(dialog));
 
 	retval = gtk_dialog_run(GTK_DIALOG(dialog));
 	if (retval == GTK_RESPONSE_NONE)
@@ -226,7 +316,7 @@ void report_error(const char *message, ...)
 void set_cardinal_property(GdkWindow *window, GdkAtom prop, gulong value)
 {
 	gdk_property_change(window, prop, xa_cardinal, 32,
-				GDK_PROP_MODE_REPLACE, (gchar *) &value, 1);
+				GDK_PROP_MODE_REPLACE, (const guchar *) &value, 1);
 }
 
 gboolean get_cardinal_property(GdkWindow *window, GdkAtom prop, gulong length,
@@ -277,8 +367,8 @@ int get_current_desktop(void)
 {
         gint act_len;
         gulong current;
-        Window root=GDK_ROOT_WINDOW();
-        GdkWindow *gdk_root=gdk_window_foreign_new(root);
+        Window root=gdk_x11_get_default_root_xwindow();
+        GdkWindow *gdk_root=gdk_x11_window_lookup_for_display(gdk_display_get_default(), root);
         int desk=0;
 
         if(get_cardinal_property(gdk_root, xa__NET_CURRENT_DESKTOP, 1,
@@ -292,8 +382,8 @@ int get_number_of_desktops(void)
 {
         gint act_len;
         gulong num;
-        Window root=GDK_ROOT_WINDOW();
-        GdkWindow *gdk_root=gdk_window_foreign_new(root);
+        Window root=gdk_x11_get_default_root_xwindow();
+        GdkWindow *gdk_root=gdk_x11_window_lookup_for_display(gdk_display_get_default(), root);
         int desks=1;
 
         if(get_cardinal_property(gdk_root, xa__NET_NUMBER_OF_DESKTOPS, 1,
@@ -309,8 +399,8 @@ void get_work_area(int *x, int *y, int *width, int *height)
 {
         gint act_len;
         gulong *work_area;
-        Window root=GDK_ROOT_WINDOW();
-        GdkWindow *gdk_root=gdk_window_foreign_new(root);
+        Window root=gdk_x11_get_default_root_xwindow();
+        GdkWindow *gdk_root=gdk_x11_window_lookup_for_display(gdk_display_get_default(), root);
         int x0, y0, w0, h0;
         int idesk, ndesk, nval;
 
@@ -354,7 +444,7 @@ void make_panel_window(GtkWidget *widget)
 {
 	static gboolean need_init = TRUE;
 	static GdkAtom xa_state, xa_atom, xa_hints, xa_win_hints;
-	GdkWindow *window = widget->window;
+	GdkWindow *window = gtk_widget_get_window(widget);
 	long wm_hints_values[] = {1, False, 0, 0, 0, 0, 0, 0};
 	GdkAtom	wm_protocols[2];
 
@@ -493,7 +583,7 @@ GtkWidget *new_help_button(HelpFunc show_help, gpointer data)
 
 	b = gtk_button_new();
 	gtk_button_set_relief(GTK_BUTTON(b), GTK_RELIEF_NONE);
-	icon = gtk_image_new_from_stock(GTK_STOCK_HELP,
+	icon = gtk_image_new_from_icon_name("help-browser",
 					GTK_ICON_SIZE_SMALL_TOOLBAR);
 	gtk_container_add(GTK_CONTAINER(b), icon);
 	g_signal_connect_swapped(b, "clicked", G_CALLBACK(show_help), data);
@@ -503,7 +593,7 @@ GtkWidget *new_help_button(HelpFunc show_help, gpointer data)
 	return b;
 }
 
-/* Read file into memory. Call parse_line(guchar *line) for each line
+/* Read file into memory. Call parse_line(gchar *line) for each line
  * in the file. Callback returns NULL on success, or an error message
  * if something went wrong. Only the first error is displayed to the user.
  */
@@ -565,19 +655,45 @@ void parse_file(const char *path, ParseFunc *parse_line)
  */
 gboolean get_pointer_xy(int *x, int *y)
 {
-	unsigned int mask;
+	GdkDisplay *display = gdk_display_get_default();
+	GdkSeat *seat = gdk_display_get_default_seat(display);
+	GdkDevice *device = gdk_seat_get_pointer(seat);
+	GdkWindow *root;
+	GdkModifierType mask;
 
-	gdk_window_get_pointer(NULL, x, y, &mask);
+	root = gdk_get_default_root_window();
+	gdk_window_get_device_position(root, device, x, y, &mask);
 
 	return mask != 0;
 }
 
+GdkWindow *gui_get_pointer(GdkWindow *relative_to,
+			   gint *x, gint *y, GdkModifierType *mask)
+{
+	GdkDisplay *display = gdk_display_get_default();
+	GdkSeat *seat = gdk_display_get_default_seat(display);
+	GdkDevice *device = gdk_seat_get_pointer(seat);
+
+	if (!relative_to)
+		relative_to = gdk_get_default_root_window();
+
+	return gdk_window_get_device_position(relative_to, device, x, y, mask);
+}
+
 int get_monitor_under_pointer(void)
 {
-	int x, y;
+	int x, y, i;
+	GdkDisplay *display = gdk_display_get_default();
+	GdkMonitor *mon;
 
 	get_pointer_xy(&x, &y);
-	return gdk_screen_get_monitor_at_point(gdk_screen_get_default(), x, y);
+	mon = gdk_display_get_monitor_at_point(display, x, y);
+	for (i = 0; i < n_monitors; i++)
+	{
+		if (gdk_display_get_monitor(display, i) == mon)
+			return i;
+	}
+	return 0;
 }
 
 #define DECOR_BORDER 32
@@ -587,10 +703,20 @@ void centre_window(GdkWindow *window, int x, int y)
 {
 	int	w, h;
 	int m;
+	GdkDisplay *display = gdk_display_get_default();
+	GdkMonitor *mon;
 
 	g_return_if_fail(window != NULL);
 
-	m = gdk_screen_get_monitor_at_point(gdk_screen_get_default(), x, y);
+	mon = gdk_display_get_monitor_at_point(display, x, y);
+	for (m = 0; m < n_monitors; m++)
+	{
+		if (gdk_display_get_monitor(display, m) == mon)
+			break;
+	}
+	if (m == n_monitors)
+		m = 0;
+
 	w = gdk_window_get_width(window);
 	h = gdk_window_get_height(window);
 
@@ -622,8 +748,11 @@ static void run_error_info_dialog(GtkMessageType type, const char *message,
 					type,
 					GTK_BUTTONS_OK,
 					"%s", s);
+	gtk_window_set_title(GTK_WINDOW(dialog), "ROX-Filer");
 	gtk_window_set_position(GTK_WINDOW(dialog), GTK_WIN_POS_CENTER);
 	gtk_dialog_set_default_response(GTK_DIALOG(dialog), GTK_RESPONSE_OK);
+	/* [20260919080217] Later prompts parent to this one. Cleared on destroy. */
+	rox_dialog_note_modal(dialog);
 	gtk_dialog_run(GTK_DIALOG(dialog));
 	gtk_widget_destroy(dialog);
 
@@ -717,29 +846,28 @@ gint rox_spawn(const gchar *dir, const gchar **argv)
 
 GtkWidget *button_new_image_text(GtkWidget *image, const char *message)
 {
-	GtkWidget *button, *align, *hbox, *label;
+	GtkWidget *button, *hbox, *label;
 
 	button = gtk_button_new();
 	label = gtk_label_new_with_mnemonic(message);
 	gtk_label_set_mnemonic_widget(GTK_LABEL(label), button);
 
-	hbox = gtk_hbox_new(FALSE, 2);
-
-	align = gtk_alignment_new(0.5, 0.5, 0.0, 0.0);
+	hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 2);
 
 	gtk_box_pack_start(GTK_BOX(hbox), image, FALSE, FALSE, 0);
 	gtk_box_pack_end(GTK_BOX(hbox), label, FALSE, FALSE, 0);
 
-	gtk_container_add(GTK_CONTAINER(button), align);
-	gtk_container_add(GTK_CONTAINER(align), hbox);
-	gtk_widget_show_all(align);
+	gtk_widget_set_halign(hbox, GTK_ALIGN_CENTER);
+	gtk_widget_set_valign(hbox, GTK_ALIGN_CENTER);
+	gtk_container_add(GTK_CONTAINER(button), hbox);
+	gtk_widget_show_all(hbox);
 
 	return button;
 }
 
 GtkWidget *button_new_mixed(const char *stock, const char *message)
 {
-	return button_new_image_text(gtk_image_new_from_stock(stock,
+	return button_new_image_text(gtk_image_new_from_icon_name(stock,
 					       GTK_ICON_SIZE_BUTTON),
 					message);
 }
@@ -747,11 +875,25 @@ GtkWidget *button_new_mixed(const char *stock, const char *message)
 /* Highlight entry in red if 'error' is TRUE */
 void entry_set_error(GtkWidget *entry, gboolean error)
 {
-	const GdkColor red = {0, 0xffff, 0, 0};
-	const GdkColor white = {0, 0xffff, 0xffff, 0xffff};
+	GtkStyleContext *ctx = gtk_widget_get_style_context(entry);
+	static GtkCssProvider *provider = NULL;
 
-	gtk_widget_modify_text(entry, GTK_STATE_NORMAL, error ? &red : NULL);
-	gtk_widget_modify_base(entry, GTK_STATE_NORMAL, error ? &white : NULL);
+	if (!provider)
+		provider = gtk_css_provider_new();
+
+	if (error)
+	{
+		const char *css = "entry { color: #ff0000; background-color: #ffffff; }";
+		gtk_css_provider_load_from_data(provider, css, -1, NULL);
+		gtk_style_context_add_provider(ctx,
+				GTK_STYLE_PROVIDER(provider),
+				GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+	}
+	else
+	{
+		gtk_style_context_remove_provider(ctx,
+				GTK_STYLE_PROVIDER(provider));
+	}
 }
 
 /* Change stacking position of higher to be just above lower.
@@ -762,91 +904,29 @@ void window_put_just_above(GdkWindow *higher, GdkWindow *lower)
 	if (o_override_redirect.int_value && lower)
 	{
 		XWindowChanges restack;
+		GdkDisplay *display = gdk_display_get_default();
 
-		gdk_error_trap_push();
+		gdk_x11_display_error_trap_push(display);
 
 		restack.stack_mode = Above;
 
-		restack.sibling = GDK_WINDOW_XWINDOW(lower);
+		restack.sibling = GDK_WINDOW_XID(lower);
 
-		XConfigureWindow(gdk_display, GDK_WINDOW_XWINDOW(higher),
+		XConfigureWindow(GDK_DISPLAY_XDISPLAY(display), GDK_WINDOW_XID(higher),
 				CWSibling | CWStackMode, &restack);
 
-		gdk_flush();
-		if (gdk_error_trap_pop())
+		gdk_display_flush(display);
+		if (gdk_x11_display_error_trap_pop(display))
 			g_warning("window_put_just_above()\n");
 	}
 	else
 		gdk_window_lower(higher);	/* To bottom of stack */
 }
 
-/* Copied from Gtk */
-static GtkFixedChild* fixed_get_child(GtkFixed *fixed, GtkWidget *widget)
-{
-	GList *children;
-
-	children = fixed->children;
-	while (children)
-	{
-		GtkFixedChild *child;
-
-		child = children->data;
-		children = children->next;
-
-		if (child->widget == widget)
-			return child;
-	}
-
-	return NULL;
-}
-
 /* Like gtk_fixed_move(), except not insanely slow */
 void fixed_move_fast(GtkFixed *fixed, GtkWidget *widget, int x, int y)
 {
-	GtkFixedChild *child;
-
-	child = fixed_get_child(fixed, widget);
-
-	g_assert(child);
-
-	gtk_widget_freeze_child_notify(widget);
-
-	child->x = x;
-	gtk_widget_child_notify(widget, "x");
-
-	child->y = y;
-	gtk_widget_child_notify(widget, "y");
-
-	gtk_widget_thaw_child_notify(widget);
-
-	if (gtk_widget_get_visible(widget) &&
-			gtk_widget_get_visible(GTK_WIDGET(fixed)))
-	{
-		int border_width = GTK_CONTAINER(fixed)->border_width;
-		GtkAllocation child_allocation;
-		GtkRequisition child_requisition;
-
-		gtk_widget_get_child_requisition(child->widget,
-					&child_requisition);
-		child_allocation.x = child->x + border_width;
-		child_allocation.y = child->y + border_width;
-
-		child_allocation.x += GTK_WIDGET(fixed)->allocation.x;
-		child_allocation.y += GTK_WIDGET(fixed)->allocation.y;
-
-		child_allocation.width = child_requisition.width;
-		child_allocation.height = child_requisition.height;
-		gtk_widget_size_allocate(child->widget, &child_allocation);
-	}
-}
-
-/* Draw the black border */
-static gint tooltip_draw(GtkWidget *w)
-{
-	gdk_draw_rectangle(w->window, w->style->fg_gc[w->state], FALSE, 0, 0,
-			w->allocation.width - 1, w->allocation.height - 1);
-
-	return FALSE;
+	gtk_fixed_move(fixed, widget, x, y);
 }
 
 /* When the tips window closed, record the time. If we try to open another
@@ -860,12 +940,16 @@ static void tooltip_destroyed(gpointer data)
 /* Display a tooltip-like widget near the pointer with 'text'. If 'text' is
  * NULL, close any current tooltip.
  */
-void tooltip_show(guchar *text)
+void tooltip_show(gchar *text)
 {
 	GtkWidget *label;
 	int	x, y, py;
 	int	w, h;
 	int m;
+	GdkDisplay *display;
+	GdkSeat *seat;
+	GdkDevice *device;
+	GtkAllocation alloc;
 
 	if (tip_timeout)
 	{
@@ -884,23 +968,37 @@ void tooltip_show(guchar *text)
 
 	/* Show the tip */
 	tip_widget = gtk_window_new(GTK_WINDOW_POPUP);
-	gtk_widget_set_app_paintable(tip_widget, TRUE);
 	gtk_widget_set_name(tip_widget, "gtk-tooltips");
-
-	g_signal_connect_swapped(tip_widget, "expose_event",
-			G_CALLBACK(tooltip_draw), tip_widget);
+	gtk_style_context_add_class(
+			gtk_widget_get_style_context(tip_widget), "rox-tooltip");
 
 	label = gtk_label_new(text);
-	gtk_misc_set_padding(GTK_MISC(label), 4, 2);
+	gtk_widget_set_margin_start(label, 4);
+	gtk_widget_set_margin_end(label, 4);
+	gtk_widget_set_margin_top(label, 2);
+	gtk_widget_set_margin_bottom(label, 2);
 	gtk_container_add(GTK_CONTAINER(tip_widget), label);
 	gtk_widget_show(label);
 	gtk_widget_realize(tip_widget);
 
-	w = tip_widget->allocation.width;
-	h = tip_widget->allocation.height;
-	gdk_window_get_pointer(NULL, &x, &py, NULL);
+	gtk_widget_get_allocation(tip_widget, &alloc);
+	w = alloc.width;
+	h = alloc.height;
+	display = gdk_display_get_default();
+	seat = gdk_display_get_default_seat(display);
+	device = gdk_seat_get_pointer(seat);
+	gdk_device_get_position(device, NULL, &x, &py);
 
-	m = gdk_screen_get_monitor_at_point(gdk_screen_get_default(), x, py);
+	{
+		GdkMonitor *at_mon = gdk_display_get_monitor_at_point(display, x, py);
+		for (m = 0; m < n_monitors; m++)
+		{
+			if (gdk_display_get_monitor(display, m) == at_mon)
+				break;
+		}
+		if (m == n_monitors)
+			m = 0;
+	}
 
 	x -= w / 2;
 	y = py + 12; /* I don't know the pointer height so I use a constant */
@@ -943,23 +1041,194 @@ void tooltip_prime(GSourceFunc callback, GObject *object)
 					 g_object_unref);
 }
 
-/* Like gtk_widget_modify_font, but copes with font_desc == NULL */
+/* Like gtk_widget_modify_font, but copes with font_desc == NULL.
+ * Uses a per-widget CssProvider stored as object data so we can
+ * replace it without leaking or touching the global cascade. */
 void widget_modify_font(GtkWidget *widget, PangoFontDescription *font_desc)
 {
-	GtkRcStyle *rc_style;
+	GtkStyleContext *ctx;
+	GtkCssProvider *old, *provider;
+	gchar *css, *size_str;
 
 	g_return_if_fail(GTK_IS_WIDGET(widget));
 
-	rc_style = gtk_widget_get_modifier_style(widget);
+	ctx = gtk_widget_get_style_context(widget);
 
-	if (rc_style->font_desc)
-		pango_font_description_free(rc_style->font_desc);
+	/* Remove previous per-widget font provider */
+	old = g_object_get_data(G_OBJECT(widget), "rox-font-provider");
+	if (old) {
+		gtk_style_context_remove_provider(ctx, GTK_STYLE_PROVIDER(old));
+		g_object_unref(old);
+		g_object_set_data(G_OBJECT(widget), "rox-font-provider", NULL);
+	}
 
-	rc_style->font_desc = font_desc
-				? pango_font_description_copy(font_desc)
-				: NULL;
+	if (!font_desc)
+		return;
 
-	gtk_widget_modify_style(widget, rc_style);
+	if (pango_font_description_get_size_is_absolute(font_desc))
+		size_str = g_strdup_printf("%dpx",
+				pango_font_description_get_size(font_desc));
+	else
+		size_str = g_strdup_printf("%dpt",
+				pango_font_description_get_size(font_desc) / PANGO_SCALE);
+
+	css = g_strdup_printf("* { font-family: %s; font-size: %s; }",
+			pango_font_description_get_family(font_desc),
+			size_str);
+	g_free(size_str);
+
+	provider = gtk_css_provider_new();
+	gtk_css_provider_load_from_data(provider, css, -1, NULL);
+	gtk_style_context_add_provider(ctx, GTK_STYLE_PROVIDER(provider),
+			GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+	g_object_set_data(G_OBJECT(widget), "rox-font-provider", provider);
+	g_free(css);
+}
+
+/* Set a per-widget background color via a private CssProvider.
+ * Safe to call repeatedly — removes the old provider first. */
+void widget_set_bg_color(GtkWidget *widget, const GdkRGBA *color)
+{
+	GtkStyleContext *ctx;
+	GtkCssProvider *old, *provider;
+	gchar *css;
+
+	g_return_if_fail(GTK_IS_WIDGET(widget));
+
+	ctx = gtk_widget_get_style_context(widget);
+
+	old = g_object_get_data(G_OBJECT(widget), "rox-bg-provider");
+	if (old) {
+		gtk_style_context_remove_provider(ctx, GTK_STYLE_PROVIDER(old));
+		g_object_unref(old);
+		g_object_set_data(G_OBJECT(widget), "rox-bg-provider", NULL);
+	}
+
+	provider = gtk_css_provider_new();
+	css = g_strdup_printf("* { background-color: rgba(%d, %d, %d, %d); }",
+			(int)(color->red * 255), (int)(color->green * 255),
+			(int)(color->blue * 255), (int)(color->alpha * 255));
+	gtk_css_provider_load_from_data(provider, css, -1, NULL);
+	gtk_style_context_add_provider(ctx, GTK_STYLE_PROVIDER(provider),
+			GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+	g_object_set_data(G_OBJECT(widget), "rox-bg-provider", provider);
+	g_free(css);
+}
+
+/* Set a per-widget foreground color via a private CssProvider.
+ * Safe to call repeatedly — removes the old provider first. */
+void widget_set_fg_color(GtkWidget *widget, const GdkRGBA *color)
+{
+	GtkStyleContext *ctx;
+	GtkCssProvider *old, *provider;
+	gchar *css;
+
+	g_return_if_fail(GTK_IS_WIDGET(widget));
+
+	ctx = gtk_widget_get_style_context(widget);
+
+	old = g_object_get_data(G_OBJECT(widget), "rox-fg-provider");
+	if (old) {
+		gtk_style_context_remove_provider(ctx, GTK_STYLE_PROVIDER(old));
+		g_object_unref(old);
+		g_object_set_data(G_OBJECT(widget), "rox-fg-provider", NULL);
+	}
+
+	provider = gtk_css_provider_new();
+	css = g_strdup_printf("* { color: rgba(%d, %d, %d, %d); }",
+			(int)(color->red * 255), (int)(color->green * 255),
+			(int)(color->blue * 255), (int)(color->alpha * 255));
+	gtk_css_provider_load_from_data(provider, css, -1, NULL);
+	gtk_style_context_add_provider(ctx, GTK_STYLE_PROVIDER(provider),
+			GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+	g_object_set_data(G_OBJECT(widget), "rox-fg-provider", provider);
+	g_free(css);
+}
+
+/*
+ * Make 'dialog' behave as a child of the filer window that launched
+ * the action: transient plus destroy-with-parent.  Window managers use
+ * this relationship to focus the dialog instead of demoting it as a
+ * focus stealer.  No-op when no filer window has focus
+ * (pinboard/panel-only contexts keep current behaviour).
+ */
+void rox_dialog_set_parent(GtkWidget *dialog)
+{
+	rox_dialog_set_parent_full(dialog, TRUE);
+}
+
+static GList *exit_blockers = NULL;
+
+static void exit_blocker_gone(gpointer data, GObject *dead)
+{
+	(void) dead;
+
+	exit_blockers = g_list_remove(exit_blockers, data);
+}
+
+/*
+ * As rox_dialog_set_parent(), but with control over destroy-with-parent:
+ * transient action dialogs pass TRUE; persistent tool windows (Options,
+ * shortcut editor, bookmarks editor) pass FALSE so they survive their
+ * launching filer window.
+ *
+ * [20260914054209] FALSE dialogs additionally join the exit-blocker
+ * registry (on close failed, new callers block --exit until they opt
+ * out via rox_dialog_allow_exit()). Removal is automatic on destroy.
+ */
+void rox_dialog_set_parent_full(GtkWidget *dialog,
+		gboolean destroy_with_parent)
+{
+	g_return_if_fail(GTK_IS_WINDOW(dialog));
+
+	/* [20260917163517] Blocking --exit must not depend on focus. */
+
+	if (!destroy_with_parent)
+	{
+		/* Dedup */
+		exit_blockers = g_list_remove(exit_blockers, dialog);
+		exit_blockers = g_list_append(exit_blockers, dialog);
+		g_object_weak_ref(G_OBJECT(dialog), exit_blocker_gone, dialog);
+	}
+
+	if (!window_with_focus || !window_with_focus->window)
+		return;
+
+	gtk_window_set_transient_for(GTK_WINDOW(dialog),
+			GTK_WINDOW(window_with_focus->window));
+	gtk_window_set_destroy_with_parent(GTK_WINDOW(dialog),
+			destroy_with_parent);
+}
+
+/* Opt out of blocking --exit.
+ */
+void rox_dialog_allow_exit(GtkWidget *dialog)
+{
+	g_return_if_fail(GTK_IS_WINDOW(dialog));
+
+	exit_blockers = g_list_remove(exit_blockers, dialog);
+}
+
+/* Block --exit while the dialog lives, without changing destroy-with-
+ * parent semantics. Removal is automatic on destroy via the same weak
+ * ref as rox_dialog_set_parent_full(,FALSE). [20260917083050]
+ */
+void rox_dialog_block_exit(GtkWidget *dialog)
+{
+	g_return_if_fail(GTK_IS_WINDOW(dialog));
+
+	/* Dedup */
+	exit_blockers = g_list_remove(exit_blockers, dialog);
+	exit_blockers = g_list_append(exit_blockers, dialog);
+	g_object_weak_ref(G_OBJECT(dialog), exit_blocker_gone, dialog);
+}
+
+/* Return live dialogs that are currently blocking --exit.
+ * Copy before destroying from return list.
+ */
+GList *rox_exit_blockers(void)
+{
+	return exit_blockers;
 }
 
 /* Confirm the action with the user. If action is NULL, the text from stock
@@ -968,7 +1237,7 @@ void widget_modify_font(GtkWidget *widget, PangoFontDescription *font_desc)
 gboolean confirm(const gchar *message, const gchar *stock, const gchar *action)
 {
 	return get_choice(PROJECT, message, 2,
-			  GTK_STOCK_CANCEL, NULL,
+			  "process-stop", NULL,
 			  stock, action) == 1;
 }
 
@@ -1028,7 +1297,7 @@ void radios_add(Radios *radios, const gchar *tip, gint value,
 	}
 
 	radio = gtk_radio_button_new_with_label(group, s);
-	gtk_label_set_line_wrap(GTK_LABEL(GTK_BIN(radio)->child), TRUE);
+	gtk_label_set_line_wrap(GTK_LABEL(gtk_bin_get_child(GTK_BIN(radio))), TRUE);
 	gtk_widget_show(radio);
 	if (tip)
 		gtk_widget_set_tooltip_text(radio, tip);
@@ -1178,39 +1447,51 @@ static void simple_image_finialize(GObject *object)
 	image->pixbuf = NULL;
 }
 
-static void simple_image_size_request(GtkWidget      *widget,
-				      GtkRequisition *requisition)
+static void simple_image_get_preferred_width(GtkWidget *widget,
+					     int *minimal_width,
+					     int *natural_width)
 {
 	SimpleImage *image = (SimpleImage *) widget;
 
-	requisition->width = image->width;
-	requisition->height = image->height;
+	*natural_width = *minimal_width = image->width;
+}
+
+static void simple_image_get_preferred_height(GtkWidget *widget,
+					      int *minimal_height,
+					      int *natural_height)
+{
+	SimpleImage *image = (SimpleImage *) widget;
+
+	*natural_height = *minimal_height = image->height;
 }
 
 /* Render a pixbuf without messing up the clipping */
-void render_pixbuf(GdkPixbuf *pixbuf, GdkDrawable *target, GdkGC *gc,
+void render_pixbuf(GdkPixbuf *pixbuf, GdkWindow *target, cairo_t *cr,
 		   int x, int y, int width, int height)
 {
-	gdk_draw_pixbuf(target, gc, pixbuf, 0, 0, x, y, width, height,
-		        GDK_RGB_DITHER_NORMAL, 0, 0);
-
+	cairo_save(cr);
+	gdk_cairo_set_source_pixbuf(cr, pixbuf, x, y);
+	if (width > 0 && height > 0)
+		cairo_rectangle(cr, x, y, width, height);
+	cairo_paint(cr);
+	cairo_restore(cr);
 }
 
-static gint simple_image_expose(GtkWidget *widget, GdkEventExpose *event)
+static gboolean simple_image_draw(GtkWidget *widget, cairo_t *cr)
 {
 	SimpleImage *image = (SimpleImage *) widget;
+	GtkAllocation alloc;
 	int x;
 
-	gdk_gc_set_clip_region(widget->style->black_gc, event->region);
+	gtk_widget_get_allocation(widget, &alloc);
 
-	x = widget->allocation.x +
-		(widget->allocation.width - image->width) / 2;
+	x = alloc.x +
+		(alloc.width - image->width) / 2;
 
-	render_pixbuf(image->pixbuf, widget->window, widget->style->black_gc,
-			x, widget->allocation.y,
+	render_pixbuf(image->pixbuf, gtk_widget_get_window(widget), cr,
+			x, alloc.y,
 			image->width, image->height);
 
-	gdk_gc_set_clip_region(widget->style->black_gc, NULL);
 	return FALSE;
 }
 
@@ -1220,8 +1501,9 @@ static void simple_image_class_init(gpointer gclass, gpointer data)
 	GtkWidgetClass *widget = (GtkWidgetClass *) gclass;
 
 	object->finalize = simple_image_finialize;
-	widget->size_request = simple_image_size_request;
-	widget->expose_event = simple_image_expose;
+	widget->get_preferred_width = simple_image_get_preferred_width;
+	widget->get_preferred_height = simple_image_get_preferred_height;
+	widget->draw = simple_image_draw;
 }
 
 static void simple_image_init(GTypeInstance *object, gpointer gclass)
@@ -1347,9 +1629,7 @@ static void rox_wmspec_change_state(gboolean add, GdkWindow *window,
 	xev.xclient.data.l[4] = 0;
 
 	XSendEvent(GDK_DISPLAY_XDISPLAY(display),
-		   GDK_WINDOW_XID(
-			gdk_screen_get_root_window(
-				gdk_drawable_get_screen(GDK_DRAWABLE(window)))),
+		   gdk_x11_get_default_root_xwindow(),
 		   False,
 		   SubstructureRedirectMask | SubstructureNotifyMask,
 		   &xev);
@@ -1360,7 +1640,7 @@ void keep_below(GdkWindow *window, gboolean setting)
 {
 	g_return_if_fail(GDK_IS_WINDOW(window));
 
-	if (GDK_WINDOW_DESTROYED(window))
+	if (gdk_window_is_destroyed(window))
 		return;
 
 	if (gdk_window_is_visible(window))
@@ -1451,7 +1731,7 @@ rox_pixbuf_new_from_file_at_scale (const char *filename,
 	GdkPixbufLoader *loader;
 	GdkPixbuf       *pixbuf;
 
-	guchar buffer [4096];
+	gchar buffer [4096];
 	int length;
 	FILE *f;
 	struct {
@@ -1488,7 +1768,7 @@ rox_pixbuf_new_from_file_at_scale (const char *filename,
 	while (!feof (f) && !ferror (f)) {
 		length = fread (buffer, 1, sizeof (buffer), f);
 		if (length > 0)
-			if (!gdk_pixbuf_loader_write (loader, buffer, length, error)) {
+			if (!gdk_pixbuf_loader_write (loader, (const guchar *) buffer, length, error)) {
 				gdk_pixbuf_loader_close (loader, NULL);
 				fclose (f);
 				g_object_unref (loader);
@@ -1606,8 +1886,7 @@ static gint button3_button_pressed(GtkButton *button,
 {
 	if (event->button == 3)
 	{
-		gtk_grab_add(GTK_WIDGET(button));
-		gtk_button_pressed(button);
+		gtk_device_grab_add(GTK_WIDGET(button), NULL, FALSE);
 
 		return TRUE;
 	}
@@ -1621,8 +1900,7 @@ static gint button3_button_released(GtkButton *button,
 {
 	if (event->button == 3)
 	{
-		gtk_grab_remove(GTK_WIDGET(button));
-		gtk_button_released(button);
+		gtk_device_grab_remove(GTK_WIDGET(button), NULL);
 
 		return TRUE;
 	}
@@ -1661,7 +1939,7 @@ gint current_event_button(void)
  * 'src' will be returned (with an increased reference count, so it is safe to
  * g_object_unref() the return value whether the function fails or not).
  */
-GdkPixbuf *create_spotlight_pixbuf(GdkPixbuf *src, GdkColor *color)
+GdkPixbuf *create_spotlight_pixbuf(GdkPixbuf *src, GdkRGBA *color)
 {
 	guchar opacity = 88;//127;//192;
 	guchar alpha = 255 - opacity;
@@ -1698,9 +1976,9 @@ GdkPixbuf *create_spotlight_pixbuf(GdkPixbuf *src, GdkColor *color)
 
 	if (color == NULL)
 		goto error;
-	r = opacity * (color->red >> 8);
-	g = opacity * (color->green >> 8);
-	b = opacity * (color->blue >> 8);
+	r = opacity * (color->red * 255);
+	g = opacity * (color->green * 255);
+	b = opacity * (color->blue * 255);
 
 	for (y = 0; y < height; y++)
 	{
@@ -1746,10 +2024,337 @@ GtkBuilder *get_gtk_builder(gchar **ids)
 	return builder;
 }
 
-void add_stock_to_menu_item(GtkWidget *item, const char *stock)
+/*
+ * A GtkMenuItem that keeps its label as the bin child and draws an icon in
+ * the toggle gutter reserved by the parent menu, mirroring the layout of the
+ * deprecated GtkImageMenuItem so decorated and undecorated entries share one
+ * hanging-indent text column.
+ */
+
+#define ROX_MENU_ITEM_SPACING 6
+
+typedef struct _RoxMenuItem RoxMenuItem;
+typedef struct _RoxMenuItemClass RoxMenuItemClass;
+
+struct _RoxMenuItem
 {
-	gtk_image_menu_item_set_image(GTK_IMAGE_MENU_ITEM(item),
-			gtk_image_new_from_stock(stock, GTK_ICON_SIZE_MENU));
+	GtkMenuItem	menu_item;
+
+	GtkWidget	*image;
+	gint		toggle_size;	/* gutter width assigned by the menu */
+};
+
+struct _RoxMenuItemClass
+{
+	GtkMenuItemClass parent_class;
+};
+
+static void rox_menu_item_destroy(GtkWidget *widget);
+static void rox_menu_item_remove(GtkContainer *container,
+			GtkWidget *child);
+static void rox_menu_item_size_allocate(GtkWidget *widget,
+			GtkAllocation *allocation);static void rox_menu_item_get_preferred_height(GtkWidget *widget,
+			gint *minimum, gint *natural);
+static void rox_menu_item_get_preferred_height_for_width(GtkWidget *widget,
+			gint width, gint *minimum, gint *natural);
+static void rox_menu_item_toggle_size_request(GtkMenuItem *menu_item,
+			gint *requisition);
+static void rox_menu_item_toggle_size_allocate(GtkMenuItem *menu_item,
+			gint allocation);
+static void rox_menu_item_forall(GtkContainer *container,
+			gboolean include_internals, GtkCallback callback,
+			gpointer callback_data);
+
+GType rox_menu_item_get_type(void);
+
+G_DEFINE_TYPE(RoxMenuItem, rox_menu_item, GTK_TYPE_MENU_ITEM)
+
+static void rox_menu_item_class_init(RoxMenuItemClass *klass)
+{
+	GtkWidgetClass *widget_class = GTK_WIDGET_CLASS(klass);
+	GtkMenuItemClass *menu_item_class = GTK_MENU_ITEM_CLASS(klass);
+	GtkContainerClass *container_class = GTK_CONTAINER_CLASS(klass);
+
+	widget_class->destroy = rox_menu_item_destroy;
+	widget_class->size_allocate = rox_menu_item_size_allocate;
+	widget_class->get_preferred_height =
+			rox_menu_item_get_preferred_height;
+	widget_class->get_preferred_height_for_width =
+			rox_menu_item_get_preferred_height_for_width;
+
+	menu_item_class->toggle_size_request =
+			rox_menu_item_toggle_size_request;
+	menu_item_class->toggle_size_allocate =
+			rox_menu_item_toggle_size_allocate;
+
+	container_class->forall = rox_menu_item_forall;
+	container_class->remove = rox_menu_item_remove;
+}
+
+static void rox_menu_item_init(RoxMenuItem *item)
+{
+	item->image = NULL;
+	item->toggle_size = 0;
+}
+
+static void rox_menu_item_destroy(GtkWidget *widget)
+{
+	RoxMenuItem *item = (RoxMenuItem *) widget;
+
+	if (item->image)
+	{
+		gtk_container_remove(GTK_CONTAINER(item), item->image);
+	}
+
+	if (GTK_WIDGET_CLASS(rox_menu_item_parent_class)->destroy)
+		GTK_WIDGET_CLASS(rox_menu_item_parent_class)->
+				destroy(widget);
+}
+
+/*
+ * The image is an internal child, not the bin child, so GtkBin's remove
+ * would reject it. Unparent it directly; anything else goes to GtkBin.
+ */
+static void rox_menu_item_remove(GtkContainer *container,
+			GtkWidget *child)
+{
+	RoxMenuItem *item = (RoxMenuItem *) container;
+
+	if (child == item->image)
+	{
+		item->image = NULL;
+		gtk_widget_unparent(child);
+		return;
+	}
+
+	GTK_CONTAINER_CLASS(rox_menu_item_parent_class)->remove(container,
+			child);
+}
+
+/* Width of the icon plus the gap between icon and label */
+static gint rox_menu_item_icon_extent(RoxMenuItem *item, gint *width,
+			gint *height)
+{
+	GtkRequisition requisition;
+
+	*width = 0;
+	*height = 0;
+
+	if (!(item->image && gtk_widget_get_visible(item->image)))
+		return 0;
+
+	gtk_widget_get_preferred_size(item->image, &requisition, NULL);
+	*width = requisition.width;
+	*height = requisition.height;
+
+	return *width > 0 ? *width + ROX_MENU_ITEM_SPACING : 0;
+}
+
+static void rox_menu_item_get_image_position(RoxMenuItem *item,
+			GtkAllocation *allocation, gint image_width,
+			gint image_height, GtkAllocation *child_allocation)
+{
+	GtkStyleContext *context;
+	GtkStateFlags state;
+	GtkBorder padding;
+	gint border_width;
+	gint x, y;
+
+	context = gtk_widget_get_style_context(GTK_WIDGET(item));
+	state = gtk_widget_get_state_flags(GTK_WIDGET(item));
+	gtk_style_context_get_padding(context, state, &padding);
+	border_width = gtk_container_get_border_width(GTK_CONTAINER(item));
+
+	if (gtk_widget_get_direction(GTK_WIDGET(item)) ==
+			GTK_TEXT_DIR_LTR)
+	{
+		x = border_width + padding.left +
+			(item->toggle_size - ROX_MENU_ITEM_SPACING -
+					image_width) / 2;
+	}
+	else
+	{
+		x = allocation->width - border_width - padding.right -
+			item->toggle_size + ROX_MENU_ITEM_SPACING +
+			(item->toggle_size - ROX_MENU_ITEM_SPACING -
+					image_width) / 2;
+	}
+
+	y = (allocation->height - image_height) / 2;
+
+	child_allocation->x = allocation->x + MAX(x, 0);
+	child_allocation->y = allocation->y + MAX(y, 0);
+	child_allocation->width = image_width;
+	child_allocation->height = image_height;
+}
+
+static void rox_menu_item_size_allocate(GtkWidget *widget,
+			GtkAllocation *allocation)
+{
+	RoxMenuItem *item = (RoxMenuItem *) widget;
+	gint width, height;
+
+	GTK_WIDGET_CLASS(rox_menu_item_parent_class)->size_allocate(
+			widget, allocation);
+
+	if (!rox_menu_item_icon_extent(item, &width, &height))
+		return;
+
+	if (width > 0 && item->toggle_size > 0)
+	{
+		GtkAllocation child_allocation;
+
+		rox_menu_item_get_image_position(item, allocation,
+				width, height, &child_allocation);
+		gtk_widget_size_allocate(item->image, &child_allocation);
+	}
+}
+
+static void rox_menu_item_get_preferred_height(GtkWidget *widget,
+			gint *minimum, gint *natural)
+{
+	RoxMenuItem *item = (RoxMenuItem *) widget;
+	gint width, height;
+
+	GTK_WIDGET_CLASS(rox_menu_item_parent_class)->get_preferred_height(
+			widget, minimum, natural);
+
+	rox_menu_item_icon_extent(item, &width, &height);
+
+	*minimum = MAX(*minimum, height);
+	*natural = MAX(*natural, height);
+}
+
+static void rox_menu_item_get_preferred_height_for_width(GtkWidget *widget,
+			gint width, gint *minimum, gint *natural)
+{
+	RoxMenuItem *item = (RoxMenuItem *) widget;
+	gint image_width, image_height;
+
+	GTK_WIDGET_CLASS(rox_menu_item_parent_class)->
+			get_preferred_height_for_width(widget, width,
+					minimum, natural);
+
+	rox_menu_item_icon_extent(item, &image_width, &image_height);
+
+	*minimum = MAX(*minimum, image_height);
+	*natural = MAX(*natural, image_height);
+}
+
+static void rox_menu_item_toggle_size_request(GtkMenuItem *menu_item,
+			gint *requisition)
+{
+	RoxMenuItem *item = (RoxMenuItem *) menu_item;
+	gint width, height;
+
+	*requisition = rox_menu_item_icon_extent(item, &width, &height);
+}
+
+static void rox_menu_item_toggle_size_allocate(GtkMenuItem *menu_item,
+			gint allocation)
+{
+	RoxMenuItem *item = (RoxMenuItem *) menu_item;
+
+	item->toggle_size = allocation;
+
+	GTK_MENU_ITEM_CLASS(rox_menu_item_parent_class)->
+			toggle_size_allocate(menu_item, allocation);
+}
+
+static void rox_menu_item_forall(GtkContainer *container,
+			gboolean include_internals, GtkCallback callback,
+			gpointer callback_data)
+{
+	RoxMenuItem *item = (RoxMenuItem *) container;
+
+	GTK_CONTAINER_CLASS(rox_menu_item_parent_class)->forall(container,
+			include_internals, callback, callback_data);
+
+	if (include_internals && item->image)
+		(*callback)(item->image, callback_data);
+}
+
+/*
+ * Create a menu item showing 'label' with 'image' in the toggle gutter.
+ * The label keeps mnemonic semantics.
+ */
+static GtkWidget *menu_item_new_with_image_full(const gchar *label,
+		GtkWidget *image, gboolean mnemonic)
+{
+	GtkWidget *item;
+	GtkWidget *label_widget;
+
+	g_return_val_if_fail(GTK_IS_WIDGET(image), NULL);
+
+	item = g_object_new(rox_menu_item_get_type(), NULL);
+
+	((RoxMenuItem *) item)->image = image;
+	gtk_widget_set_parent(image, item);
+	gtk_widget_show(image);
+
+	label_widget = gtk_accel_label_new(label ?
+			label : "");
+	gtk_accel_label_set_accel_widget(GTK_ACCEL_LABEL(label_widget),
+			GTK_WIDGET(item));
+	gtk_label_set_mnemonic_widget(GTK_LABEL(label_widget), item);
+	if (mnemonic)
+	{
+		gtk_label_set_use_underline(GTK_LABEL(label_widget), TRUE);
+	}
+	gtk_label_set_xalign(GTK_LABEL(label_widget), 0.0);
+	gtk_container_add(GTK_CONTAINER(item), label_widget);
+	gtk_widget_show(label_widget);
+
+	return item;
+}
+
+GtkWidget *menu_item_new_with_image(const gchar *label, GtkWidget *image)
+{
+	return menu_item_new_with_image_full(label, image, FALSE);
+}
+
+/* As above, but '_' in the label marks a mnemonic. [20260921084135]
+ * Only for labels that carried mnemonics in GTK2 (SendTo rows);
+ * dynamic plain-text labels (AppMenu XML, panel applets) keep
+ * the non-mnemonic form.
+ */
+GtkWidget *menu_item_new_with_image_mnemonic(const gchar *label,
+		GtkWidget *image)
+{
+	return menu_item_new_with_image_full(label, image, TRUE);
+}
+
+/*
+ * Replace a menu item's icon, keeping the internal-image bookkeeping the
+ * custom gutter layout (rox_menu_item_icon_extent) relies on. The old
+ * image is released through the same remove path used at destroy, and the
+ * new image's floating reference is sunk by parenting it. Passing a NULL
+ * image clears the icon (leaving no gutter), which is how a menu row
+ * represents "no action". [20260923070143]
+ */
+void menu_item_set_image(GtkWidget *item, GtkWidget *image)
+{
+	g_return_if_fail(GTK_IS_WIDGET(item));
+
+	if (!G_TYPE_CHECK_INSTANCE_TYPE(item, rox_menu_item_get_type()))
+	{
+		if (image)
+			gtk_widget_destroy(image);
+		return;
+	}
+
+	if (((RoxMenuItem *) item)->image)
+		gtk_container_remove(GTK_CONTAINER(item),
+				((RoxMenuItem *) item)->image);
+
+	if (image)
+	{
+		((RoxMenuItem *) item)->image = image;
+		gtk_widget_set_parent(image, item);
+		gtk_widget_show(image);
+	}
+
+	gtk_widget_queue_resize(item);
 }
 
 /* assigned needs be filled NULL and length is 27 */
@@ -1771,8 +2376,8 @@ gchar get_mnemonic(gchar *text, gchar *assigned)
 
 	if (assigned &&
 		ret != '\0' &&
-		ret >= GDK_a &&
-		ret <= GDK_z)
+		ret >= GDK_KEY_a &&
+		ret <= GDK_KEY_z)
 	{
 		for (; ; assigned+=1)
 		{
@@ -1828,8 +2433,8 @@ gchar *add_mnemonic(gchar *text, gchar *assigned)
 					}
 
 			if (!found &&
-				lc >= GDK_a &&
-				lc <= GDK_z)
+			lc >= GDK_KEY_a &&
+			lc <= GDK_KEY_z)
 			{
 				if (k ==0)
 					assigned[alen] = lc;

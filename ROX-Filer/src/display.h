@@ -89,7 +89,7 @@ void draw_large_icon(GdkWindow *window,
 		     DirItem  *item,
 		     GdkPixbuf *image,
 		     gboolean selected,
-		     GdkColor *color);
+		     GdkRGBA *color);
 gboolean display_is_truncated(FilerWindow *filer_window, int i);
 void display_change_size(FilerWindow *filer_window, gboolean bigger);
 
@@ -109,18 +109,18 @@ void draw_small_icon(GdkWindow *window,
 					DirItem  *item,
 					GdkPixbuf *image,
 					gboolean selected,
-					GdkColor *color);
+					GdkRGBA *color);
 void draw_huge_icon(
-					GdkWindow *window,
-					GtkStyle *style,
+					cairo_t *cr,
 					GdkRectangle *area,
 					DirItem *item,
 					GdkPixbuf *image,
 					gboolean selected,
-					GdkColor *color);
+					GdkRGBA *color,
+					int scale_factor);
 void display_set_actual_size(FilerWindow *filer_window, gboolean force_resize);
-void draw_emblem_on_icon(GdkWindow *window, GtkStyle   *style,
+void draw_emblem_on_icon(cairo_t *cr,
 				const char *stock_id,
-			 int *x, int y, GdkColor *color);
+			 int *x, int y, GdkRGBA *color, int scale_factor);
 
 #endif /* _DISPLAY_H */

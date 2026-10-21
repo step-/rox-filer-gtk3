@@ -36,8 +36,8 @@ struct _Icon {
 	GObject		object;
 	
 	gboolean	selected;
-	guchar		*src_path;	/* Eg: ~/Apps */
-	guchar		*path;		/* Eg: /home/fred/Apps */
+	gchar		*src_path;	/* Eg: ~/Apps */
+	gchar		*path;		/* Eg: /home/fred/Apps */
 	DirItem		*item;
 	gchar		*shortcut;	/* Eg: Control + x */
 	MyKey		shortcut_key;	/* Parsed version of shortcut */

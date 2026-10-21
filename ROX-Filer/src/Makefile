@@ -7,7 +7,7 @@ BUILDDIR = ../build
 all:
 	cd ${BUILDDIR} && ${MAKE}
 
-# This ensures we get the header files for GTK 2.4
+# This ensures we get the header files for GTK 3
 with0launch:
 	0launch --source --main=/ROX-Filer/build --wrapper='make -C' ../ROX-Filer-src.xml
 

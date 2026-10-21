@@ -37,24 +37,27 @@ struct _MIME_type
 /* Prototypes */
 void type_init(void);
 const char *basetype_name(DirItem *item);
-MIME_type *type_get_type(const guchar *path);
+MIME_type *type_get_type(const gchar *path);
 
 MIME_type *type_from_path(const char *path);
 MaskedPixmap *type_to_icon(MIME_type *type);
+gchar *type_icon_source_path(const gchar *path, DirItem *item,
+		gchar **marker);;
 GdkAtom type_to_atom(MIME_type *type);
 MIME_type *mime_type_from_base_type(int base_type);
 int mode_to_base_type(int st_mode);
 void type_set_handler_dialog(MIME_type *type);
 gboolean can_set_run_action(DirItem *item);
 gchar *describe_current_command(MIME_type *type);
-GdkColor *type_get_colour(DirItem *item, GdkColor *normal);
+GdkRGBA *type_get_colour(DirItem *item, GdkRGBA *normal);
+void type_adapt_default_colours(GtkStyleContext *ctx);
 void reread_mime_files(void);
 extern const char *mime_type_comment(MIME_type *type);
 extern MIME_type *mime_type_lookup(const char *type);
 extern GList *mime_type_name_list(gboolean only_regular);
 char *handler_for(MIME_type *type);
 
-extern GdkColor type_colours[];
+extern GdkRGBA type_colours[];
 extern Option o_display_colour_types;
 
 

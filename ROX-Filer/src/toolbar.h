@@ -17,12 +17,14 @@ typedef enum {
 	TOOLBAR_TEXT		= 4,
 } ToolbarType;
 
-extern Option o_toolbar, o_toolbar_info, o_toolbar_min_width;
-extern int toolbar_min_width;
+extern Option o_toolbar, o_toolbar_info, o_toolbar_disable;
+extern Option o_toolbar_min_buttons;
+extern int toolbar_usable_width;
 
 /* Prototypes */
 void toolbar_init(void);
 void toolbar_update_info(FilerWindow *filer_window);
 void toolbar_update_toolbar(FilerWindow *filer_window);
+void toolbar_update_min_buttons(FilerWindow *filer_window);
 
 #endif /* _TOOLBAR_H */

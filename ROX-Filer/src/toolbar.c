@@ -1,6 +1,7 @@
 /*
  * ROX-Filer, filer for the ROX desktop project
  * Copyright (C) 2006, Thomas Leonard and others (see changelog for details).
+ * Copyright (C) 2026, step <step.commons@gmail.com>.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the Free
@@ -57,8 +58,14 @@ struct _Tool {
 };
 
 Option o_toolbar, o_toolbar_info, o_toolbar_disable;
-Option o_toolbar_min_width;
-int toolbar_min_width = 100;
+Option o_toolbar_min_buttons;
+int toolbar_usable_width = 0;
+
+/* Tie-breaker added to the measured floor: at the exact threshold a
+ * sub-pixel rounding loss would push the Nth button into overflow,
+ * whose ~26 px arrow then drags one more button down with it. Small
+ * enough that it can never pull the (N+1)th button back in. */
+#define TOOLBAR_FLOOR_EPSILON 32
 
 /* TRUE if the button presses (or released) should open a new window,
  * rather than reusing the existing one.
@@ -94,6 +101,7 @@ static void toolbar_sort_clicked(GtkWidget *widget,
 				   FilerWindow *filer_window);
 static GtkWidget *add_button(GtkWidget *bar, Tool *tool,
 				FilerWindow *filer_window);
+static int toolbar_measure_usable(GtkWidget *bar);
 static void create_toolbar(GtkWidget *bar, FilerWindow *filer_window);
 static gboolean drag_motion(GtkWidget		*widget,
                             GdkDragContext	*context,
@@ -108,98 +116,99 @@ static void drag_leave(GtkWidget	*widget,
 static void handle_drops(FilerWindow *filer_window,
 			 GtkWidget *button,
 			 DropDest dest);
-static void toggle_selected(GtkToggleButton *widget, gpointer data);
+static void toggle_selected(GtkWidget *widget, gpointer data);
 static void option_notify(void);
-static GList *build_tool_options(Option *option, xmlNode *node, guchar *label);
+static GList *build_tool_options(Option *option, xmlNode *node, gchar *label);
 
 static Tool all_tools[] = {
-	{N_("Close"), GTK_STOCK_CLOSE, N_("Close filer window"),
+	{N_("Close"), "rox-close", N_("Close filer window"),
 	 toolbar_close_clicked, DROP_NONE, FALSE,
 	 FALSE},
 
-	{N_("Up"), GTK_STOCK_GO_UP, N_("Change to parent directory\n"
-						"  Right: Open parent directory\n"
-						"  Middle: Change to parent in real path"),
+	{N_("Up"), "rox-go-up", N_("Change to parent directory\n"
+					"  Right: Open parent directory\n"
+					"  Middle: Change to parent in real path"),
 	 toolbar_up_clicked, DROP_TO_PARENT, TRUE,
 	 FALSE},
 
-	{N_("Home"), GTK_STOCK_HOME, N_("Change to home directory\n"
-						"  Right: Open home directory\n"
-						"  Middle: Change to first bookmark"),
+	{N_("Home"), "rox-go-home", N_("Change to home directory\n"
+					"  Right: Open home directory\n"
+					"  Middle: Change to first bookmark"),
 	 toolbar_home_clicked, DROP_TO_HOME, TRUE,
 	 FALSE},
 
-	{N_("Jump"), ROX_STOCK_BOOKMARKS, N_("Bookmarks menu\n"
-						"  Right: Edit Bookmarks\n"
-						"  Middle: Jump to last visited directory"),
+	/* TRANSLATORS: "top of Recently Visited" refers to the "Recently Visited" bookmark menu */
+	{N_("Go"), ROX_STOCK_BOOKMARKS, N_("Bookmarks menu\n"
+					"  Right: Edit Bookmarks\n"
+					"  Middle: Go to top of Recently Visited"),
 	 toolbar_bookmarks_clicked, DROP_BOOKMARK, FALSE,
 	 TRUE},
 
-	{N_("Scan"), GTK_STOCK_REFRESH, N_("Rescan directory contents\n"
-						"  Middle: Delete/re-create thumbnail cache"),
+	{N_("Scan"), "rox-refresh-view", N_("Rescan directory contents\n"
+					"  Middle: Delete/re-create thumbnail cache"),
 	 toolbar_refresh_clicked, DROP_NONE, TRUE,
 	 FALSE},
 
-	{N_("Size┼"), GTK_STOCK_ZOOM_IN, N_("Change icon size\n"
-						"  Right: Change to smaller\n"
-						"  Middle: Change to Auto Size\n"
-						"  Scroll: Temporary huge zoom\n"
-						"Current size:\n"
-						"  ┘ : Huge\n"
-						"  ┤ : Large\n"
-						"  ┐ : Small\n"
-						"  ┌, ├ : Auto"),
+	{N_("Size┼"), "rox-zoom-icon", N_("Change icon size\n"
+					"  Right: Change to smaller\n"
+					"  Middle: Change to Auto Size\n"
+					"  Scroll: Temporary huge zoom\n"
+					"Current size:\n"
+					"  ┘ : Huge\n"
+					"  ┤ : Large\n"
+					"  ┐ : Small\n"
+					"  ┌, ├ : Auto"),
 	 toolbar_size_clicked, DROP_NONE, TRUE,
 	 FALSE},
 
-	{N_("Auto"), GTK_STOCK_ZOOM_FIT, N_("Automatic size mode"),
+	{N_("Auto"), "rox-zoom-auto-fit", N_("Automatic size mode"),
 	 toolbar_autosize_clicked, DROP_NONE, TRUE,
 	 FALSE},
 
-	{N_("List"), ROX_STOCK_SHOW_DETAILS, N_("Show extra details\n"
-						"  Right: Rotate Icons with details\n"
-						"  Middle: Return to normal Icons View"),
+	{N_("List"), "rox-show-details", N_("Show extra details\n"
+					"  Right: Rotate Icons with details\n"
+					"  Middle: Return to normal Icons View"),
 	 toolbar_details_clicked, DROP_NONE, TRUE,
 	 FALSE},
 
-	{N_("Sort"), GTK_STOCK_SORT_ASCENDING, N_("Change sort criteria"),
+	{N_("Sort"), "rox-sort-view", N_("Change sort criteria"),
 	 toolbar_sort_clicked, DROP_NONE, FALSE,
 	 FALSE},
 
-	{N_("Hide"), ROX_STOCK_SHOW_HIDDEN, N_("Left: Show/hide hidden files\n"
-						 "Right: Show/hide thumbnails"),
+	{N_("Hide"), "rox-show-hidden", N_("Left: Show/hide hidden files\n"
+					"Right: Show/hide thumbnails"),
 	 toolbar_hidden_clicked, DROP_NONE, TRUE,
 	 FALSE},
 
-	{N_("Dirs"), GTK_STOCK_DIRECTORY, N_("Left: Show only directories\n"
-						 "Right: Show only files"),
+	{N_("Dirs"), "rox-show-dir", N_("Left: Show only directories\n"
+					"Right: Show only files"),
 	 toolbar_dirs_clicked, DROP_NONE, FALSE,
 	 FALSE},
 
-	{N_("Select"), GTK_STOCK_SELECT_ALL, N_("Left: Select all\n"
-						"Right: Invert selection"),
+	{N_("Select"), "rox-select", N_("Left: Select all\n"
+					"Right: Invert selection"),
 	 toolbar_select_clicked, DROP_NONE, FALSE,
 	 FALSE},
 
-	{N_("New"), GTK_STOCK_ADD, N_("Left: New Directory\n"
-								  "Middle: New Blank file\n"
-								  "Right: Menu"),
+	{N_("New"), "rox-add-new", N_("Left: New Directory\n"
+					"Middle: New Blank file\n"
+					"Right: Menu"),
 	 toolbar_new_clicked, DROP_NONE, FALSE,
 	 FALSE},
 
-	{N_("○"), GTK_STOCK_SAVE, N_("Save Current Display Settings...\n"
-						"  Right: for parent/* \n"
-						"  Middle: Clear to default settings\n"
-						"Under:\n"
-						"  ▽: No settings\n"
-						"  ▼: Own settings\n"
-						"  ▶: Parent settings\n"
-						"  ▷: Far parent settings"
-						),
+	{N_("Save"), "rox-save-display", N_("Save Current Display Settings...\n"
+					"  Right: for parent/* \n"
+					"  Middle: Clear to default settings\n"
+					"Under:\n"
+					"  ▽: No settings\n"
+					"  ▼: Own settings\n"
+					"  ▶: Parent settings\n"
+					"  ▷: Far parent settings"
+					),
 	 toolbar_settings_clicked, DROP_NONE, TRUE,
 	 FALSE},
 
-	{N_("Help"), GTK_STOCK_HELP, N_("Show ROX-Filer help"),
+	{N_("Help"), "rox-help", N_("Show ROX-Filer help"),
 	 toolbar_help_clicked, DROP_NONE, TRUE,
 	 FALSE},
 };
@@ -211,17 +220,13 @@ static Tool all_tools[] = {
 
 void toolbar_init(void)
 {
-	option_add_int(&o_toolbar, "toolbar_type", TOOLBAR_TEXT);
+	option_add_int(&o_toolbar, "toolbar_type", TOOLBAR_LARGE);
 	option_add_int(&o_toolbar_info, "toolbar_show_info", 1);
 	option_add_string(&o_toolbar_disable, "toolbar_disable",
-					GTK_STOCK_CLOSE ","
-					GTK_STOCK_ZOOM_FIT ","
-					GTK_STOCK_SORT_ASCENDING ","
-					ROX_STOCK_SHOW_HIDDEN ","
-					GTK_STOCK_DIRECTORY ","
-					GTK_STOCK_SELECT_ALL ","
-					GTK_STOCK_HELP);
-	option_add_int(&o_toolbar_min_width, "toolbar_min_width", 1);
+					"rox-close" ","
+					"rox-zoom-auto-fit" ","
+					"rox-save-display");
+	option_add_int(&o_toolbar_min_buttons, "toolbar_min_buttons", 8);
 	option_add_notify(option_notify);
 
 	option_register_widget("tool-options", build_tool_options);
@@ -323,6 +328,7 @@ void toolbar_update_toolbar(FilerWindow *filer_window)
 	if (o_toolbar.int_value != TOOLBAR_NONE)
 	{
 		filer_window->toolbar = gtk_toolbar_new();
+		gtk_widget_set_name(filer_window->toolbar, "rox-toolbar");
 
 		gtk_box_pack_start(filer_window->toplevel_vbox,
 				filer_window->toolbar, FALSE, TRUE, 0);
@@ -332,10 +338,32 @@ void toolbar_update_toolbar(FilerWindow *filer_window)
 		create_toolbar(filer_window->toolbar, filer_window);
 
 		gtk_widget_show_all(filer_window->toolbar);
+
+		if (gtk_widget_get_realized(filer_window->window))
+			toolbar_update_min_buttons(filer_window);
 	}
 
 	filer_target_mode(filer_window, NULL, NULL, NULL);
 	toolbar_update_info(filer_window);
+}
+
+/* Re-measure the auto-resize usable floor. In GTK3 a pre-realize
+ * measurement returns zero (icons cannot be resolved yet), so this must
+ * be called once the window is realized.
+ */
+void toolbar_update_min_buttons(FilerWindow *filer_window)
+{
+	int m;
+
+	if (!filer_window->toolbar)
+		return;
+
+	m = toolbar_measure_usable(filer_window->toolbar);
+
+	/* An unrealized bar measures all-zero; keep the previous value
+	 * rather than recording garbage. */
+	if (m > 0 || toolbar_usable_width == 0)
+		toolbar_usable_width = m;
 }
 
 /****************************************************************
@@ -374,6 +402,17 @@ static gint get_release()
 		ret = ((GdkEventButton *) event)->button;
 		if (ret == 1 && ((GdkEventButton *) event)->state & GDK_MOD1_MASK)
 			ret = 2;
+	}
+	else if (event->type == GDK_BUTTON_PRESS)
+	{
+		/*
+		 * toolbar_button_pressed() invokes the handler directly for
+		 * [20260826083509]: toolbar_button_pressed() invokes the
+		 * handler directly for menu tools (currently only Go),
+		 * so the current event is the press, not a release.
+		 * Trust its button number likewise.
+		 */
+		ret = ((GdkEventButton *) event)->button;
 	}
 
 	gdk_event_free(event);
@@ -440,28 +479,20 @@ static void toolbar_home_clicked(GtkWidget *widget, FilerWindow *filer_window)
 static void toolbar_bookmarks_clicked(GtkWidget *widget,
 				      FilerWindow *filer_window)
 {
-	GdkEvent	*event;
+	gint eb = get_release();
 
 	g_return_if_fail(filer_window != NULL);
 
-	event = get_current_event(GDK_BUTTON_PRESS);
-	if (event->type == GDK_BUTTON_PRESS &&
-			((GdkEventButton *) event)->button == 1)
-	{
+	if (eb == 1)
 		bookmarks_show_menu(filer_window, widget);
-	}
-	else if (event->type == GDK_BUTTON_RELEASE)
+	else if (eb == 2)
 	{
-		gint eb = get_release();
-		if (eb == 2)
-		{
-			if (bookmarks_get_recent())
-				filer_change_to(filer_window, bookmarks_get_recent(), NULL);
-		}
-		else if (eb != 1)
-			bookmarks_edit();
+		gchar *recent = bookmarks_get_recent();
+		if (recent)
+			filer_change_to(filer_window, recent, NULL);
 	}
-	gdk_event_free(event);
+	else
+		bookmarks_edit();
 }
 
 static void toolbar_close_clicked(GtkWidget *widget, FilerWindow *filer_window)
@@ -481,6 +512,7 @@ static void toolbar_up_clicked(GtkWidget *widget, FilerWindow *filer_window)
 {
 	gint eb = get_release();
 
+	filer_window->wink_after_select = TRUE;
 	if (NEW_WIN_BUTTON(eb) && eb != 2)
 		filer_open_parent(filer_window);
 	else
@@ -702,7 +734,12 @@ static GtkWidget *in_drag_move;
 static int bar_enter(FilerWindow *fw)
 { //end of gtk_window_begin_move_drag
 	if (in_drag_move)
+	{
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 		gtk_button_released(GTK_BUTTON(in_drag_move));
+#pragma GCC diagnostic pop
+	}
 
 	in_drag_move = NULL;
 	return FALSE;
@@ -733,9 +770,9 @@ static int bar_motion(GtkWidget *widget, GdkEventMotion *event, FilerWindow *fw)
 			if (fw->view_type == VIEW_TYPE_COLLECTION)
 			{
 				gdk_window_get_geometry(
-						fw->window->window, NULL, NULL,
+						gtk_widget_get_window(fw->window), NULL, NULL,
 						&fw->resize_drag_width,
-						NULL, NULL);
+						NULL);
 
 				fw->name_scale_start = fw->name_scale;
 			}
@@ -821,14 +858,37 @@ static gint bar_pressed(GtkWidget *widget,
 
 	return TRUE;
 }
+/* In GTK3, GtkToolbar creates an input-only event window that intercepts
+ * all button events (including scroll, which are X11 buttons 4-7).
+ * Scroll events on toolbar buttons never reach the inner GtkButton.
+ * This handler dispatches scroll events to the appropriate child widget.
+ */
 static gint bar_scrolled(
 		GtkButton *button,
 		GdkEventScroll *event,
 		FilerWindow *fw)
 {
-//	if (fw->right_link && event->state & GDK_MOD1_MASK)
-//		filer_dir_link_next(fw->right_link, event->direction, FALSE);
-//
+	GtkWidget *toolbar = GTK_WIDGET(button);
+	GList *children, *l;
+
+	children = gtk_container_get_children(GTK_CONTAINER(toolbar));
+	for (l = children; l; l = l->next)
+	{
+		GtkWidget *tool_item = l->data;
+		GtkAllocation alloc;
+
+		gtk_widget_get_allocation(tool_item, &alloc);
+		if (event->x >= alloc.x && event->x < alloc.x + alloc.width &&
+		    event->y >= alloc.y && event->y < alloc.y + alloc.height)
+		{
+			g_list_free(children);
+			/* Dispatch to the inner GtkButton inside the GtkToolButton */
+			GtkWidget *inner = gtk_bin_get_child(GTK_BIN(tool_item));
+			return gtk_widget_event(inner, (GdkEvent *) event);
+		}
+	}
+	g_list_free(children);
+
 	if (fw->right_link &&
 				event->state & (GDK_SHIFT_MASK | GDK_BUTTON1_MASK))
 		filer_send_event_to_view(fw->right_link, (GdkEvent *) event);
@@ -859,6 +919,47 @@ static void toolbar_new_clicked(GtkWidget *widget, FilerWindow *filer_window)
 	gdk_event_free(event);
 }
 
+/* Exact width at which the first `toolbar_min_buttons' toolbar children
+ * are visible and the rest live in the overflow pulldown: hide the
+ * surplus children, take the bar's natural width (which then includes
+ * the real gaps, margins and chrome for exactly those children), and
+ * show them again. Every child counts — buttons as well as the trailing
+ * item-totals label, which is simply the last one. Returns 0 when the
+ * option is off or the bar has no children.
+ */
+static int toolbar_measure_usable(GtkWidget *bar)
+{
+	GList	*kids, *l;
+	int	i = 0, want;
+	GtkRequisition req;
+
+	want = o_toolbar_min_buttons.int_value;
+
+	if (want <= 0)
+		return 0;
+
+	kids = gtk_container_get_children(GTK_CONTAINER(bar));
+	for (l = kids; l; l = l->next)
+	{
+		if (i >= want)
+			gtk_widget_hide(GTK_WIDGET(l->data));
+		i++;
+	}
+
+	gtk_widget_get_preferred_size(bar, NULL, &req);
+
+	for (l = kids; l; l = l->next)
+	{
+		if (--i >= 0)
+			gtk_widget_show(GTK_WIDGET(l->data));
+	}
+	g_list_free(kids);
+
+	/* Exact threshold plus a tie-breaker: without the epsilon, sub-
+	 * pixel rounding hides the Nth button and the appearing overflow
+	 * arrow cascades one more away. */
+	return req.width > 0 ? req.width + TOOLBAR_FLOOR_EPSILON : 0;
+}
 /* If filer_window is NULL, the toolbar is for the options window */
 static void create_toolbar(GtkWidget *bar, FilerWindow *filer_window)
 {
@@ -889,29 +990,23 @@ static void create_toolbar(GtkWidget *bar, FilerWindow *filer_window)
 
 	if (filer_window)
 	{
-		/* Make the toolbar wide enough for all icons to be
-		   seen, plus a little for the (start of the) text
-		   label. Though the return of size_request is incorrect.
-		   Probably it can't get current icon size.
-		   */
-		GtkRequisition req;
-		gtk_widget_size_request(bar, &req);
-		toolbar_min_width = req.width;
+		/* The item-totals label is appended after the buttons; its
+		 * width is covered by the usable floor when N reaches it. */
 
 		filer_window->toolbar_text = gtk_label_new(
 				o_toolbar_info.int_value ? _("_N_Items_") : "");
-		gtk_misc_set_alignment(GTK_MISC(filer_window->toolbar_text),
-					0, 0.5);
-		gtk_toolbar_append_widget(GTK_TOOLBAR(bar),
-				filer_window->toolbar_text, NULL, NULL);
+		gtk_widget_set_halign(filer_window->toolbar_text, GTK_ALIGN_START);
+		gtk_widget_set_valign(filer_window->toolbar_text, GTK_ALIGN_CENTER);
+		GtkToolItem *item = gtk_tool_item_new();
+		gtk_container_add(GTK_CONTAINER(item), filer_window->toolbar_text);
+		gtk_toolbar_insert(GTK_TOOLBAR(bar), item, -1);
 
-		//somehow label width is not included
-		gtk_widget_size_request(filer_window->toolbar_text, &req);
-		toolbar_min_width += req.width;
+		if (filer_window)
+			toolbar_usable_width = toolbar_measure_usable(bar);
 
 		gtk_widget_set_size_request(bar, 100, -1);
 
-		gtk_widget_add_events(bar, GDK_BUTTON_RELEASE | GDK_MOTION_NOTIFY);
+		gtk_widget_add_events(bar, GDK_BUTTON_RELEASE | GDK_MOTION_NOTIFY | GDK_SCROLL_MASK);
 		g_signal_connect(bar, "motion-notify-event",
 			G_CALLBACK(bar_motion), filer_window);
 		g_signal_connect(bar, "button-release-event",
@@ -950,7 +1045,10 @@ static gint toolbar_button_pressed(GtkButton *button,
 	{
 		toolbar_other_button = event->button;
 		gtk_grab_add(GTK_WIDGET(button));
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 		gtk_button_pressed(button);
+#pragma GCC diagnostic pop
 
 		return TRUE;
 	}
@@ -1026,7 +1124,10 @@ static gint toolbar_button_released(GtkButton *button,
 	{
 		toolbar_other_button = 0;
 		gtk_grab_remove(GTK_WIDGET(button));
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 		gtk_button_released(button);
+#pragma GCC diagnostic pop
 
 		return TRUE;
 	}
@@ -1034,72 +1135,122 @@ static gint toolbar_button_released(GtkButton *button,
 	return FALSE;
 }
 
+/* Find the first GtkLabel in the widget subtree of 'widget' */
+static GtkWidget *find_label_child(GtkWidget *widget)
+{
+	if (GTK_IS_LABEL(widget))
+		return widget;
+	if (GTK_IS_CONTAINER(widget))
+	{
+		GList *children, *l;
+		GtkWidget *found = NULL;
+
+		children = gtk_container_get_children(GTK_CONTAINER(widget));
+		for (l = children; l; l = l->next)
+		{
+			found = find_label_child(l->data);
+			if (found)
+				break;
+		}
+		g_list_free(children);
+		return found;
+	}
+	return NULL;
+}
+
 /* If filer_window is NULL, the toolbar is for the options window */
 static GtkWidget *add_button(GtkWidget *bar, Tool *tool,
 				FilerWindow *filer_window)
 {
-	GtkWidget *button, *icon_widget, *label = NULL, *hbox;
+	GtkWidget *button, *icon_widget, *label = NULL;
+	GtkToolItem *tool_item;
 
-	icon_widget = gtk_image_new_from_stock(tool->name,
+	icon_widget = gtk_image_new_from_icon_name(tool->name,
 						GTK_ICON_SIZE_LARGE_TOOLBAR);
 
-	button = gtk_toolbar_insert_element(GTK_TOOLBAR(bar),
-			   filer_window ? GTK_TOOLBAR_CHILD_BUTTON
-					: GTK_TOOLBAR_CHILD_TOGGLEBUTTON,
-			   NULL,
-			   _(tool->label),
-			   _(tool->tip), NULL,
-			   icon_widget,
-			   NULL, NULL,	/* CB, userdata */
-			   GTK_TOOLBAR(bar)->num_children);
+	if (filer_window)
+		tool_item = gtk_tool_button_new(icon_widget, _(tool->label));
+	else
+	{
+		tool_item = gtk_toggle_tool_button_new();
+		gtk_tool_button_set_icon_widget(GTK_TOOL_BUTTON(tool_item),
+				icon_widget);
+	}
+	gtk_tool_item_set_tooltip_text(tool_item, _(tool->tip));
+	gtk_toolbar_insert(GTK_TOOLBAR(bar), tool_item, -1);
+	button = GTK_WIDGET(tool_item);
 	gtk_widget_set_can_focus(button, FALSE);
 
 	g_object_set_data(G_OBJECT(button), "rox-tool", tool);
 
 	if (filer_window)
 	{
+		GtkWidget *inner = gtk_bin_get_child(GTK_BIN(tool_item));
+
 		g_signal_connect(button, "clicked",
 			G_CALLBACK(tool->clicked), filer_window);
 
-		g_signal_connect(button, "button_press_event",
+		/* In GTK3, events go to the inner GtkButton inside the
+		 * GtkToolButton. Connect event signals there. */
+		g_object_set_data(G_OBJECT(inner), "rox-tool", tool);
+
+		g_signal_connect(inner, "button_press_event",
 			G_CALLBACK(toolbar_button_pressed), filer_window);
-		g_signal_connect(button, "button_release_event",
+		g_signal_connect(inner, "button_release_event",
 			G_CALLBACK(toolbar_button_released), filer_window);
 
-		gtk_widget_add_events(button, GDK_BUTTON_RELEASE | GDK_MOTION_NOTIFY);
-		g_signal_connect(button, "motion-notify-event",
+		gtk_widget_add_events(inner, GDK_BUTTON_RELEASE | GDK_MOTION_NOTIFY | GDK_SCROLL_MASK);
+		g_signal_connect(inner, "motion-notify-event",
 			G_CALLBACK(bar_motion), filer_window);
-		g_signal_connect(button, "button-release-event",
+		g_signal_connect(inner, "button-release-event",
 			G_CALLBACK(btn_released), filer_window);
-		g_signal_connect(button, "button_press_event",
+		g_signal_connect(inner, "button_press_event",
 			G_CALLBACK(bar_pressed), filer_window);
-		g_signal_connect_swapped(button, "enter-notify-event",
+		g_signal_connect_swapped(inner, "enter-notify-event",
 			G_CALLBACK(bar_enter), filer_window);
+
+		/* Prevent the inner GtkButton inside GtkToolButton from stealing keyboard focus */
+		gtk_widget_set_can_focus(inner, FALSE);
+
+		/* GTK 3.24 does not pack a label widget for GTK_TOOLBAR_BOTH_HORIZ.
+		 * Create and pack one manually.  Use xalign 0.0 for LTR, 1.0 for
+		 * RTL so text is always START-aligned (reads from the icon). */
+		if (o_toolbar.int_value == TOOLBAR_HORIZONTAL)
+		{
+			GtkWidget *box = gtk_bin_get_child(GTK_BIN(inner));
+			gtk_widget_set_halign(box, GTK_ALIGN_CENTER);
+			GtkWidget *l = gtk_label_new_with_mnemonic(_(tool->label));
+			gtk_label_set_xalign(GTK_LABEL(l),
+				gtk_widget_get_direction(l) == GTK_TEXT_DIR_RTL
+					? 1.0 : 0.0);
+			gtk_label_set_yalign(GTK_LABEL(l), 0.5);
+			gtk_box_pack_end(GTK_BOX(box), l, FALSE, FALSE, 0);
+			gtk_widget_show(l);
+		}
 
 		if (o_toolbar.int_value != TOOLBAR_NORMAL)
 		{
-			GList	  *kids;
-			hbox = GTK_BIN(button)->child;
-			kids = gtk_container_get_children(GTK_CONTAINER(hbox));
-			label = g_list_nth_data(kids, 1);
-
-			g_list_free(kids);
+			label = find_label_child(button);
 		}
 
 		if (o_toolbar.int_value == TOOLBAR_HORIZONTAL ||
 			o_toolbar.int_value == TOOLBAR_TEXT)
-			gtk_misc_set_alignment(GTK_MISC(label), 0.2, 0.5);
+			if (label)
+			{
+				gtk_widget_set_halign(label, GTK_ALIGN_CENTER);
+				gtk_widget_set_valign(label, GTK_ALIGN_CENTER);
+			}
 
 		if (tool->clicked == toolbar_size_clicked)
 		{
 			filer_window->toolbar_size_text = GTK_LABEL(label);
-			g_signal_connect(button, "scroll_event",
+			g_signal_connect(inner, "scroll_event",
 				G_CALLBACK(toolbar_button_scroll), filer_window);
-			g_signal_connect(button, "enter_notify_event",
+			g_signal_connect(inner, "enter_notify_event",
 				G_CALLBACK(toolbar_size_enter), filer_window);
 		}
 		else
-			g_signal_connect(button, "scroll_event",
+			g_signal_connect(inner, "scroll_event",
 				G_CALLBACK(toolbar_button_scroll), NULL);
 
 		if (tool->clicked == toolbar_settings_clicked)
@@ -1116,7 +1267,7 @@ static GtkWidget *add_button(GtkWidget *bar, Tool *tool,
 	return button;
 }
 
-static void toggle_selected(GtkToggleButton *widget, gpointer data)
+static void toggle_selected(GtkWidget *widget, gpointer data)
 {
 	option_check_widget(&o_toolbar_disable);
 }
@@ -1131,17 +1282,17 @@ static gboolean drag_motion(GtkWidget		*widget,
                             guint		time,
 			    FilerWindow		*filer_window)
 {
-	GdkDragAction	action = context->suggested_action;
+	GdkDragAction	action = gdk_drag_context_get_suggested_action(context);
 	DropDest	dest;
 	gpointer	type = (gpointer) drop_dest_dir;
 
 	dest = (DropDest) g_object_get_data(G_OBJECT(widget), "toolbar_dest");
 
-	if ((context->actions & GDK_ACTION_ASK) && o_dnd_left_menu.int_value &&
+	if ((gdk_drag_context_get_actions(context) & GDK_ACTION_ASK) && o_dnd_left_menu.int_value &&
 		dest != DROP_BOOKMARK)
 	{
 		guint state;
-		gdk_window_get_pointer(NULL, NULL, NULL, &state);
+		gui_get_pointer(NULL, NULL, NULL, &state);
 		if (state & GDK_BUTTON1_MASK)
 			action = GDK_ACTION_ASK;
 	}
@@ -1160,7 +1311,7 @@ static gboolean drag_motion(GtkWidget		*widget,
 	gdk_drag_status(context, action, time);
 
 	dnd_spring_load(context, filer_window);
-	gtk_button_set_relief(GTK_BUTTON(widget), GTK_RELIEF_NORMAL);
+	gtk_button_set_relief(GTK_BUTTON(gtk_bin_get_child(GTK_BIN(widget))), GTK_RELIEF_NORMAL);
 
 	return TRUE;
 }
@@ -1170,7 +1321,7 @@ static void drag_leave(GtkWidget	*widget,
 		       guint32		time,
 		       FilerWindow	*filer_window)
 {
-	gtk_button_set_relief(GTK_BUTTON(widget), GTK_RELIEF_NONE);
+	gtk_button_set_relief(GTK_BUTTON(gtk_bin_get_child(GTK_BIN(widget))), GTK_RELIEF_NONE);
 	dnd_spring_abort();
 }
 
@@ -1190,7 +1341,7 @@ static void option_notify(void)
 {
 	int		i;
 	gboolean	changed = FALSE;
-	guchar		*list = o_toolbar_disable.value;
+	gchar		*list = o_toolbar_disable.value;
 
 	for (i = 0; i < sizeof(all_tools) / sizeof(*all_tools); i++)
 	{
@@ -1215,8 +1366,19 @@ static void option_notify(void)
 		}
 
 		filer_resize_all(TRUE);
-	} else if (o_toolbar_min_width.has_changed)
+	} else if (o_toolbar_min_buttons.has_changed)
+	{
+		GList	*next;
+
+		/* Re-measure with the new N before resizing; the toolbar
+		 * itself is unchanged, so nothing else refreshes the
+		 * cached floor. */
+		for (next = all_filer_windows; next; next = next->next)
+			toolbar_update_min_buttons(
+					(FilerWindow *) next->data);
+
 		filer_resize_all(TRUE);
+	}
 }
 
 static void update_tools(Option *option)
@@ -1227,25 +1389,29 @@ static void update_tools(Option *option)
 
 	for (next = kids; next; next = next->next)
 	{
-		GtkToggleButton	*kid = (GtkToggleButton *) next->data;
-		guchar		*name;
+		GtkToggleToolButton	*kid;
+		gchar			*name;
 
+		if (!GTK_IS_TOGGLE_TOOL_BUTTON(next->data))
+			continue;
+
+		kid = GTK_TOGGLE_TOOL_BUTTON(next->data);
 		name = g_object_get_data(G_OBJECT(kid), "tool_name");
 
 		g_return_if_fail(name != NULL);
 
-		gtk_toggle_button_set_active(kid,
+		gtk_toggle_tool_button_set_active(kid,
 					 !in_list(name, option->value));
 	}
 
 	g_list_free(kids);
 }
 
-static guchar *read_tools(Option *option)
+static gchar *read_tools(Option *option)
 {
 	GList	*next, *kids;
 	GString	*list;
-	guchar	*retval;
+	gchar	*retval;
 
 	list = g_string_new(NULL);
 
@@ -1253,10 +1419,15 @@ static guchar *read_tools(Option *option)
 
 	for (next = kids; next; next = next->next)
 	{
-		GtkToggleButton	*kid = (GtkToggleButton *) next->data;
-		guchar		*name;
+		GtkToggleToolButton	*kid;
+		gchar			*name;
 
-		if (!gtk_toggle_button_get_active(kid))
+		if (!GTK_IS_TOGGLE_TOOL_BUTTON(next->data))
+			continue;
+
+		kid = GTK_TOGGLE_TOOL_BUTTON(next->data);
+
+		if (!gtk_toggle_tool_button_get_active(kid))
 		{
 			name = g_object_get_data(G_OBJECT(kid), "tool_name");
 			g_return_val_if_fail(name != NULL, list->str);
@@ -1274,10 +1445,8 @@ static guchar *read_tools(Option *option)
 	return retval;
 }
 
-static GList *build_tool_options(Option *option, xmlNode *node, guchar *label)
+static GList *build_tool_options(Option *option, xmlNode *node, gchar *label)
 {
-	GtkWidget	*bar;
-
 	g_return_val_if_fail(option != NULL, NULL);
 
 	option->widget = gtk_toolbar_new();

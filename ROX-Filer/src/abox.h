@@ -25,7 +25,14 @@ struct _ABox
 	GtkWidget	*src_label;	/* Shows what is being processed now */
 	GtkWidget	*log;		/* The TextView for the messages */
 	GtkWidget	*log_hbox;
+	GtkWidget	*log_scroll;	/* ScrolledWindow holding log */
+	guint		log_scroll_id;	/* Pending deferred scroll, 0 if none */
+	gint		log_height;	/* Height requested of log_scroll */
+	gint		log_max_height;	/* Upper bound for log_height */
 	GtkWidget	*results;	/* List of filenames found */
+	GtkWidget	*results_scroll; /* ScrolledWindow holding results */
+	GtkWidget	*results_pane;	/* Divider shared with the log, Find only */
+	GtkWidget	*results_menu;	/* Reused Results popup */
 	GtkWidget	*entry;		/* Plain entry, or part of combo */
 	GtkWidget	*btn_cancel;
 	GtkWidget	*btn_close;
@@ -68,7 +75,8 @@ void	abox_set_current_object		(ABox *abox,
 					 const gchar *message);
 void	abox_log			(ABox *abox,
 					 const gchar *message,
-					 const gchar *style);
+					 const gchar *style,
+					 gboolean grow);
 void	abox_add_results		(ABox *abox);
 void	abox_add_filename		(ABox *abox,
 					 const gchar *pathname);
