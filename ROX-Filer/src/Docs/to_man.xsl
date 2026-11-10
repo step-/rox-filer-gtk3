@@ -16,11 +16,16 @@
 	    <xsl:text> </xsl:text>
 	    <xsl:value-of select="manvolnum"/>
 	    <xsl:text> "</xsl:text>
-	    <xsl:value-of select="/book/bookinfo/copyright/year[1]"/>
+	    <xsl:value-of select="/book/bookinfo/copyright[1]/year[1]"/>
+	    <xsl:text>; </xsl:text>
+	    <xsl:value-of select="/book/bookinfo/copyright[2]/year[1]"/>
+	    <xsl:value-of select="/book/bookinfo/copyright/year[2]"/>
 	    <xsl:text>" "</xsl:text>
-	    <xsl:value-of select="/book/bookinfo/author/firstname"/>
+	    <xsl:value-of select="/book/bookinfo/authorgroup/author[1]/firstname"/>
 	    <xsl:text> </xsl:text>
-	    <xsl:value-of select="/book/bookinfo/author/surname"/>
+	    <xsl:value-of select="/book/bookinfo/authorgroup/author[1]/surname"/>
+	    <xsl:text>; </xsl:text>
+	    <xsl:value-of select="/book/bookinfo/authorgroup/author[2]/firstname"/>
 	    <xsl:text>" ""
 </xsl:text>
     </xsl:template>

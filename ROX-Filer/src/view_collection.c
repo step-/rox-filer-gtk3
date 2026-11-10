@@ -1309,6 +1309,9 @@ static gint coll_button_press(GtkWidget *widget,
 			      GdkEventButton *event,
 			      ViewCollection *view_collection)
 {
+	/* A click ends the automatic cursor state. */
+	view_collection->filer_window->provisional_cursor = NULL;
+
 	collection_set_cursor_item(view_collection->collection, -1, TRUE);
 
 	if (dnd_motion_press(widget, event))
@@ -1865,6 +1868,12 @@ static void view_collection_show_cursor(ViewIface *view)
 	}
 
 	collection_move_cursor(collection, 0, 0, 0);
+
+	/* [20261107103645] The cursor is provisional until the user moves it. */
+	if (collection->cursor_item >= 0 &&
+			collection->cursor_item < collection->number_of_items)
+		view_collection->filer_window->provisional_cursor =
+			collection->items[collection->cursor_item].data;
 }
 
 /* The first time the next() method is used, this is called */

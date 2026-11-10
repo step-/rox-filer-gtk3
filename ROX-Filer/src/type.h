@@ -49,6 +49,7 @@ int mode_to_base_type(int st_mode);
 void type_set_handler_dialog(MIME_type *type);
 gboolean can_set_run_action(DirItem *item);
 gchar *describe_current_command(MIME_type *type);
+gchar *describe_current_command_plain(MIME_type *type);
 GdkRGBA *type_get_colour(DirItem *item, GdkRGBA *normal);
 void type_adapt_default_colours(GtkStyleContext *ctx);
 void reread_mime_files(void);

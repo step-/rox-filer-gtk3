@@ -3124,9 +3124,9 @@ generated.
     <para>
      <variablelist>
 
-      <varlistentry><term><option>-b</option></term><term><option>--border=PANEL</option></term>
-       <listitem><para>open PANEL.
-      </para></listitem></varlistentry>
+       <varlistentry><term><option>-b</option></term><term><option>--border=PANEL</option></term>
+        <listitem><para>open PANEL as a border panel.
+       </para></listitem></varlistentry>
 
       <varlistentry><term><option>-B</option></term><term><option>--bottom=PANEL</option></term>
        <listitem><para>open PANEL as a bottom-edge panel.
@@ -3158,8 +3158,9 @@ generated.
 
       <varlistentry><term><option>-n</option></term><term><option>--new</option></term>
       <listitem><para>start a new filer, even if one already seems to be
-      running. This also prevents the filer from forking (running in the
-      background). This option is mainly useful for debugging.
+running. This also prevents the filer from forking (running in the
+background). This option is mainly useful for debugging.
+See also the <option>-z</option> option.
       </para></listitem></varlistentry>
 
       <varlistentry><term><option>-p</option></term><term><option>--pinboard=PIN</option></term>
@@ -3204,11 +3205,59 @@ scheme the shared URI handler configuration is consulted to run it.
        <listitem><para>display the version information and exit.
       </para></listitem></varlistentry>
 
+       <varlistentry><term><option>-V</option></term><term><option>--view-type=N</option></term>
+        <listitem><para>initial view 1=Icon,2=List.
+       </para></listitem></varlistentry>
+
       <varlistentry><term><option>-x</option></term><term><option>--examine=FILE</option></term>
        <listitem><para>FILE has changed; re-examine it.
       </para></listitem></varlistentry>
 
-     </variablelist>
+       <varlistentry><term><option>-z</option></term>
+        <listitem><para>Disable the RPC handler - for use with option <option>-n</option>.
+       </para></listitem></varlistentry>
+
+       <varlistentry><term><option>--config=NAME</option></term>
+        <listitem><para>use NAME for configuration and SOAP RPC isolation.
+Use this option to isolate rox-filer-gtk3 from a running legacy ROX-Filer or other
+rox-filer-gtk3 processes. To isolate instances of the same configuration use the
+<option>-n</option> and <option>-z</option> options.
+If <option>--config</option> is not specified,
+the default configuration sub-directory is "ROX-Filer", and the default
+SOAP RPC endpoint is the legacy ROX-Filer's endpoint.
+       </para></listitem></varlistentry>
+
+       <varlistentry><term><option>--dump-css</option></term>
+        <listitem><para>print internal CSS to stdout and exit.
+Customize the dumped CSS and save it as "style.css" in your
+configuration sub-directory. This file is loaded when ROX-Filer
+restarts, and when its refresh button is clicked in the Options dialog.
+       </para></listitem></varlistentry>
+
+       <varlistentry><term><option>--exit</option></term>
+        <listitem><para>close all windows of this configuration.
+If an operation that should not be interrupted is in progress, such as a file copy,
+this option blocks and prompts the user to confirm the exit.
+       </para></listitem></varlistentry>
+
+       <varlistentry><term><option>--exit-force</option></term>
+        <listitem><para>quit without prompting; quits a blocked <option>--exit</option>.
+       </para></listitem></varlistentry>
+
+       <varlistentry><term><option>--options</option></term>
+        <listitem><para>open the Options dialog.
+       </para></listitem></varlistentry>
+
+       <varlistentry><term><option>--property=FILE</option></term>
+        <listitem><para>print some of the FILE's properties that can be also
+         be viewed in its Properties dialog, then exit.
+       </para></listitem></varlistentry>
+
+       <varlistentry><term><option>--property0=FILE</option></term>
+        <listitem><para>same as the <option>--property</option> but with NUL-separated records.
+       </para></listitem></varlistentry>
+
+      </variablelist>
     </para>
    </refsect1>
 
@@ -3223,6 +3272,8 @@ scheme the shared URI handler configuration is consulted to run it.
    <refsect1><title>LICENSE</title>
     <para>Copyright (C) 2004 Thomas Leonard.
      </para><para>
+      Copyright (C) 2026, step &lt;step.commons@gmail.com&gt;.
+     </para><para>
      You may redistribute copies of ROX-Filer under the terms of the GNU General
      Public License.
     </para>
@@ -3231,6 +3282,9 @@ scheme the shared URI handler configuration is consulted to run it.
    <refsect1><title>BUGS</title>
     <para>
      Please report bugs to the developer mailing list: <ulink url="http://rox.sourceforge.net/contact.html"/>.
+    </para>
+    <para>
+     Please report rox-filer-gtk3 bugs to <ulink url="https://github.com/step-/rox-filer-gtk3/issues"/>.
     </para>
    </refsect1>
 
@@ -3309,6 +3363,13 @@ scheme the shared URI handler configuration is consulted to run it.
      and many others; the <filename>Changes</filename> file contains more
      detailed information!
     </para>
+
+    <para>______________________________________</para>
+    <para>
+     In 2026 step ported rox-filer-gtk3 from jun7's ROX-Filer fork.
+     The <filename>NEWS.md</filename> file contains more detailed information.
+    </para>
+
    </refsect1>
 
   </refentry>

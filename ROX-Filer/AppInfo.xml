@@ -14,7 +14,7 @@
   <Summary xml:lang="gl">Xestor gr&#xE1;afico de arquivos</Summary>
   <About xml:lang="en">
     <Purpose>File manager</Purpose>
-    <Version>2026.0.0b2</Version>
+    <Version>26.0.0rc1</Version>
     <Authors>1999-2014: Thomas Leonard and others; 2015-2023: jun7; 2026 (GTK3): step</Authors>
     <License>GNU General Public License version 2</License>
     <Homepage>https://github.com/step-/rox-filer-gtk3</Homepage>

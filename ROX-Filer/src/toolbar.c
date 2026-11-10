@@ -835,6 +835,9 @@ static gint bar_pressed(GtkWidget *widget,
 {
 	if (event->type != GDK_BUTTON_PRESS) return FALSE;
 
+	/* A toolbar press ends the automatic cursor state. */
+	filer_window->provisional_cursor = NULL;
+
 	switch (event->button)
 	{
 	case 2:
@@ -868,6 +871,9 @@ static gint bar_scrolled(
 		GdkEventScroll *event,
 		FilerWindow *fw)
 {
+	/* A toolbar scroll ends the automatic cursor state. */
+	fw->provisional_cursor = NULL;
+
 	GtkWidget *toolbar = GTK_WIDGET(button);
 	GList *children, *l;
 
@@ -960,6 +966,28 @@ static int toolbar_measure_usable(GtkWidget *bar)
 	 * arrow cascades one more away. */
 	return req.width > 0 ? req.width + TOOLBAR_FLOOR_EPSILON : 0;
 }
+
+/* [20261107103645] The GtkToolbar overflow arrow is an internal
+ * GtkToggleButton, not a tool item. Its own press handler returns TRUE
+ * and is connected in gtk_toolbar_init(), so a press handler added here
+ * would never run. Watch the toggle instead.
+ */
+static void clear_provisional_cursor(GtkWidget *widget, gpointer data)
+{
+	FilerWindow *filer_window = data;
+
+	filer_window->provisional_cursor = NULL;
+}
+
+static void hook_toolbar_arrow(GtkWidget *widget, gpointer data)
+{
+	if (!GTK_IS_TOGGLE_BUTTON(widget))
+		return;
+
+	g_signal_connect(widget, "toggled",
+		G_CALLBACK(clear_provisional_cursor), data);
+}
+
 /* If filer_window is NULL, the toolbar is for the options window */
 static void create_toolbar(GtkWidget *bar, FilerWindow *filer_window)
 {
@@ -1017,6 +1045,9 @@ static void create_toolbar(GtkWidget *bar, FilerWindow *filer_window)
 
 		g_signal_connect(bar, "scroll_event",
 			G_CALLBACK(bar_scrolled), filer_window);
+
+		gtk_container_forall(GTK_CONTAINER(bar),
+			hook_toolbar_arrow, filer_window);
 	}
 }
 
@@ -1030,6 +1061,9 @@ static gint toolbar_button_pressed(GtkButton *button,
 {
 	gint	b = event->button;
 	Tool	*tool;
+
+	/* A toolbar press ends the automatic cursor state. */
+	filer_window->provisional_cursor = NULL;
 
 	tool = g_object_get_data(G_OBJECT(button), "rox-tool");
 	g_return_val_if_fail(tool != NULL, TRUE);

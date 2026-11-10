@@ -514,7 +514,7 @@ static void build_menu_for_type(GList *paths, MIME_type *type, GList **items, gb
 
 	/* Single scope-aware Customise entry; the scope outlives the
 	 * menu_selection_type() static via the closure [20260911082953]. */
-	item = menu_placeholder_item(_("Customise..."));
+	item = gtk_menu_item_new_with_label(_("Customise..."));
 	gtk_widget_show(item);
 	*items = g_list_append(*items, item);
 	if (track)

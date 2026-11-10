@@ -570,6 +570,48 @@ static void set_icon(FilerWindow *fw, GdkPixbuf *src)
 	if (lined)
 		g_object_unref(lined);
 }
+
+/* [20261107103645] While the user has not moved the cursor of a new window,
+ * keep the cursor on the first item. A new window places the keyboard cursor
+ * on the first item at the end of the initial scan. A later change in the
+ * directory can sort another item in first position. The cursor stays on the
+ * first item. The provisional_cursor field is cleared on user input elsewhere.
+ */
+static void filer_check_provisional_cursor(FilerWindow *fw)
+{
+	ViewIter iter;
+	DirItem *first;
+
+	if (!fw->provisional_cursor)
+		return;
+
+	view_get_cursor(fw->view, &iter);
+	if (iter.peek(&iter) != fw->provisional_cursor)
+	{
+		/* The cursor is not where the automatic placement put it. */
+		fw->provisional_cursor = NULL;
+		return;
+	}
+
+	view_get_iter(fw->view, &iter, 0);
+	first = iter.next(&iter);
+	if (!first)
+	{
+		fw->provisional_cursor = NULL;
+		return;
+	}
+
+	if (first != fw->provisional_cursor)
+	{
+		view_cursor_to_iter(fw->view, &iter);
+		fw->provisional_cursor = first;
+	}
+
+	/* Keep the first item visible if the view scrolled
+	 * to follow the cursor before this call. */
+	view_scroll_to_top(fw->view);
+}
+
 static void update_display(Directory *dir,
 		DirAction action, void *items, FilerWindow *filer_window)
 {
@@ -723,6 +765,11 @@ static void update_display(Directory *dir,
 			queue_interesting(filer_window);
 			break;
 	}
+
+	if (action == DIR_ADD || action == DIR_REMOVE ||
+	    action == DIR_UPDATE || action == DIR_UPDATE_EXA ||
+	    action == DIR_UPDATE_ICON)
+		filer_check_provisional_cursor(fw);
 }
 
 static void attach(FilerWindow *filer_window)
@@ -731,6 +778,7 @@ static void attach(FilerWindow *filer_window)
 	gdk_display_flush(gdk_display_get_default());
 
 	view_clear(filer_window->view);
+	filer_window->provisional_cursor = NULL;
 	filer_window->scanning = TRUE;
 
 	if (filer_window->sort_type != SORT_NAME || o_display_dirs_first.int_value)
@@ -1288,7 +1336,17 @@ static gboolean scroll_cb(GtkWidget *widget,
 			GdkEventScroll *event,
 			FilerWindow *fw)
 {
+	/* Scrolling ends the automatic cursor state. */
+	fw->provisional_cursor = NULL;
 	filer_set_pointer(fw);
+	return FALSE;
+}
+
+static gboolean provisional_cursor_input(GtkWidget *widget,
+			GdkEvent *event,
+			FilerWindow *fw)
+{
+	fw->provisional_cursor = NULL;
 	return FALSE;
 }
 
@@ -1696,6 +1754,9 @@ gint filer_key_press_event(GtkWidget	*widget,
 	guint key = event->keyval;
 	GdkModifierType modifiers = gtk_accelerator_get_default_mod_mask();
 	char group[2] = "1";
+
+	/* A key press ends the automatic cursor state. */
+	filer_window->provisional_cursor = NULL;
 
 	window_with_focus = filer_window;
 
@@ -2503,6 +2564,10 @@ static void filer_add_widgets(FilerWindow *filer_window, const gchar *wm_class)
 
 	/* Create this now to make the Adjustment before the View */
 	filer_window->scrollbar = gtk_scrollbar_new(GTK_ORIENTATION_VERTICAL, NULL);
+	g_signal_connect(filer_window->scrollbar, "button-press-event",
+			G_CALLBACK(provisional_cursor_input), filer_window);
+	g_signal_connect(filer_window->scrollbar, "scroll-event",
+			G_CALLBACK(provisional_cursor_input), filer_window);
 
 	vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
 	gtk_container_add(GTK_CONTAINER(filer_window->window), vbox);

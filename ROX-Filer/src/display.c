@@ -314,8 +314,14 @@ void draw_huge_icon(
 	{
 		scale = MIN(ws, hs);
 		width = gdk_pixbuf_get_width(image) * scale;
-		height = gdk_pixbuf_get_height(image) * scale;;
+		height = gdk_pixbuf_get_height(image) * scale;
 	}
+
+	/* A very oblong image can truncate a fitted dimension to zero;
+	 * keep at least one pixel so the pixbuf is scaled to fit
+	 * instead of painted at full size over its neighbors. */
+	width = MAX(width, 1);
+	height = MAX(height, 1);
 
 	if (scale != 1.0 && width > 0 && height > 0)
 		scaled = gdk_pixbuf_scale_simple(image,
@@ -810,6 +816,11 @@ void display_set_autoselect(FilerWindow *filer_window, const gchar *leaf)
 	}
 	else
 		filer_window->auto_select = new;
+
+	/* [20261107103645] This item cannot be an automatic first item since
+	 * it is an explicit selection target. Clear the state after the
+	 * placement and autoselect above, which may themselves have set it. */
+	filer_window->provisional_cursor = NULL;
 }
 
 /* Change the icon size (wraps) */

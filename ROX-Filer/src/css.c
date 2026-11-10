@@ -216,6 +216,16 @@ GString *css_build_internal(gboolean dump)
 		"/* If visible, set a bg color or the desktop will bleed through. */\n"
 		"#rox-toolbar {\n"
 		"  background-color: @theme_bg_color; background-image: none; border-bottom-style: none;\n"
+		"}\n"
+		"\n"
+		"/* Toolbar button color. */\n"
+		"/* Use `color: currentColor;` to match your light/dark theme. */\n"
+		"#rox-toolbar image {\n"
+		"  color: #2590ca;\n"
+		"}\n"
+		"\n"
+		"#rox-toolbar #gtk-toolbar-arrow {\n"
+		"  color: currentColor\n"
 		"}\n");
 
 	/* Scrollbar trough — opaque to prevent desktop bleed-through

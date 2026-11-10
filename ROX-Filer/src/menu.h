@@ -77,7 +77,6 @@ GtkWidget *menu_item_new_named_image(const char *label,
 		const char *icon_name);
 GtkWidget *menu_item_new_named_image_mnemonic(const char *label,
 		const char *icon_name);
-GtkWidget *menu_placeholder_item(const char *label);
 void menu_refresh_icons(void);
 GtkWidget *menu_start(gchar *label, GtkWidget *parent, GtkWidget **item_out);
 GtkWidget *menu_start_detached(gchar *label, GtkWidget *parent,

@@ -12,6 +12,9 @@
 ---
 
 **All together:**
+[New since beta 2] ·
+[Changed since beta 2] ·
+[Fixed since beta 2] ·
 [New since alpha 3] ·
 [Changed since alpha 3] ·
 [Fixed since alpha 3] ·
@@ -63,6 +66,55 @@
 ---
 
 ## Unreleased
+
+## Release candidate 1 2026-11-10
+
+*Contents*
+* [New since beta 2]
+* [Changed since beta 2]
+* [Fixed since beta 2]
+
+Commit: d8493f1
+
+### New since beta 2
+
+* The Properties dialog now shows a `Thumbnail:` row naming the
+  cached thumbnail file when one exists for the item. The value
+  can be copied via the primary selection like any other row.
+
+* New `--property=FILE` and `--property0=FILE` options: print five
+  `name=value` records for a file (path, run_action, icon, thumbnail,
+  mime_type) to stdout and exit. The NUL-separated variant suits `xargs -0`.
+
+* The `rox(1)` manual page now documents every `AppRun --help` option.
+
+* Users can change the color of toolbar buttons via the `style.css` file.
+
+  How to try: Dump the `style.css` template (see the [Instance stylesheet]
+  section) and change the `#rox-toolbar image` color declaration. Use
+  `currentColor` to follow the GTK theme's default foreground color.
+
+### Changed since beta 2
+
+* The Display menu shows the active view mode as a radio group.
+
+### Fixed since beta 2
+
+* Very oblong thumbnails no longer paint over neighboring
+  labels in small icon view. Patch by Burunduk.
+
+* Adding a file with a long name no longer scrolls a scrolled icon
+  view to the keyboard focus position. A bottom-scrolled view stays
+  at the bottom.
+
+* Narrowing or widening a window updates the scrollbar range, so
+  the last icon row can still be scrolled to.
+
+* The keyboard cursor follows a new top item when one appears after
+  a folder window opens and before the user interacts with the window.
+
+* The List view focus outline no longer paints over the column header
+  when the cursor row is scrolled out of view.
 
 ## Beta 2 test 2026-10-21
 
@@ -167,9 +219,9 @@ Commit: 1c61d9a
   "Unmount". Previously these opened without a title.
 
 * Changed the default scrollbar CSS to prevent desktop bleed through
-  with the Marwaita-X theme family. Update your custom style.css file.
+  with the Marwaita-X theme family. Update your custom `style.css` file.
   The default CSS is a compromize between various common themes, and
-  could not exactly match the user's theme. Tweak it via style.css.
+  could not exactly match the user's theme. Tweak it via `style.css`.
 
 * Added some menu icons.
 
@@ -719,6 +771,11 @@ How to try: change the minibuffer colors via the [Instance stylesheet].
 [ROX-Filer2]: https://forum.puppylinux.com/viewtopic.php?t=17225
 
 [Unreleased]: #unreleased
+[Release candidate 1 2026-11-10]: #release-candidate-1-2026-11-10
+[Release candidate 1]: #release-candidate-1
+[New since beta 2]: #new-since-beta-2
+[Changed since beta 2]: #changed-since-beta-2
+[Fixed since beta 2]: #fixed-since-beta-2
 [Beta 2 test 2026-10-21]: #beta-2-test-2026-10-21
 [Beta 2 test]: #beta-2-test
 [Beta 1 test 2026-10-14]: #beta-1-test-2026-10-14

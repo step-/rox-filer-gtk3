@@ -109,7 +109,7 @@ struct _Collection
 	gint		number_of_items;	/* (often compared with -1) */
 	guint		item_width, item_height;
 	gfloat      reached_scale; //item width and height reached max size;
-	gdouble		old_height, old_pos;
+	gdouble		old_height, old_pos, old_page;
 
 	guint		number_selected;
 

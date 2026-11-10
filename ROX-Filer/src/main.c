@@ -156,6 +156,8 @@ int opt_view_type = -1;
        "      --exit		close all windows of this configuration\n"	\
        "      --exit-force	quit without prompting; quits a blocked --exit\n"	\
        "      --options		open the Options dialog\n"			\
+       "      --property=FILE	print FILE's properties and exit\n" \
+       "      --property0=FILE	same, NUL-separated records\n" \
        "\nReport bugs to %s.\n"		\
        "Home page (including updated versions): http://rox.sourceforge.net/\n")
 
@@ -164,7 +166,8 @@ int opt_view_type = -1;
 #ifdef HAVE_GETOPT_LONG
 enum {
 	OPT_DUMP_CSS = 256, OPT_PROJECT_NAME = 257,
-	OPT_SHOW_OPTIONS = 258, OPT_EXIT = 259, OPT_EXIT_FORCE = 260
+	OPT_SHOW_OPTIONS = 258, OPT_EXIT = 259, OPT_EXIT_FORCE = 260,
+	OPT_PROPERTY = 261, OPT_PROPERTY0 = 262
 };
 
 static struct option long_opts[] =
@@ -194,6 +197,8 @@ static struct option long_opts[] =
 	{"options", 0, NULL, OPT_SHOW_OPTIONS},
 	{"exit", 0, NULL, OPT_EXIT},
 	{"exit-force", 0, NULL, OPT_EXIT_FORCE},
+	{"property", 1, NULL, OPT_PROPERTY},
+	{"property0", 1, NULL, OPT_PROPERTY0},
 	{"config", 1, NULL, OPT_PROJECT_NAME},
 	{NULL, 0, NULL, 0},
 };
@@ -549,15 +554,127 @@ int main(int argc, char **argv)
 			case 'u':
 				show_user = TRUE;
 				break;
-		        case 'm':
+			case 'm':
 			{
 				MIME_type *type;
 				type_init();
 				diritem_init();
 				pixmaps_init();
+				mount_init();
 				type = type_get_type(VALUE);
 				printf("%s/%s\n", type->media_type,
 						type->subtype);
+				return EXIT_SUCCESS;
+			}
+
+			case OPT_PROPERTY:
+			case OPT_PROPERTY0:
+			{
+				gboolean null_term = (c == OPT_PROPERTY0);
+				char term = null_term ? '\0' : '\n';
+				MIME_type *type;
+				DirItem *item;
+				gchar *base, *full;
+				gchar *icon_path = NULL;
+				gchar *marker = NULL;
+				gboolean forcheck = FALSE;
+				GdkPixbuf *thumb = NULL;
+				gchar *thumb_path = NULL;
+				gchar *run_action = NULL;
+
+				type_init();
+				diritem_init();
+				pixmaps_init();
+				mount_init();
+
+				full = g_canonicalize_filename(VALUE, NULL);
+
+				base = g_path_get_basename(full);
+				item = diritem_new(base);
+				g_free(base);
+				diritem_restat(full, item, NULL, TRUE);
+
+				/* No such item: path and errno only. */
+				if (item->lstat_errno != 0)
+				{
+					printf("path=%s%c", full, term);
+					printf("error=%d%c", item->lstat_errno,
+						term);
+					if (!null_term)
+						fputc('\n', stdout);
+					g_free(full);
+					diritem_free(item);
+					return EXIT_SUCCESS;
+				}
+
+				type = item->mime_type ? item->mime_type
+						: type_get_type(full);
+
+				printf("path=%s%c", full, term);
+
+				printf("run_action=");
+				if (item->base_type != TYPE_DIRECTORY)
+				{
+					if (EXECUTABLE_FILE(item))
+						printf("Execute file%c", term);
+					else if (item->mime_type)
+					{
+						char *handler =
+						handler_for(item->mime_type);
+
+						if (!handler)
+							printf("%c", term);
+						else
+						{
+							g_free(handler);
+							run_action =
+							describe_current_command_plain(
+								item->mime_type);
+							printf("%s%c",
+								run_action ?
+									run_action
+									: "",
+								term);
+							g_free(run_action);
+						}
+					}
+					else
+						printf("%c", term);
+				}
+				else
+					printf("%c", term);
+
+				icon_path = type_icon_source_path(full, item,
+						&marker);
+				g_free(marker);
+				printf("icon=%s%c", icon_path ? icon_path : "",
+					term);
+				g_free(icon_path);
+
+				thumb = pixmap_try_thumb(full, &forcheck);
+				if (thumb)
+				{
+					g_object_unref(thumb);
+					thumb_path =
+						pixmap_make_thumb_path(full);
+				}
+				printf("thumbnail=%s%c",
+					thumb_path ? thumb_path : "", term);
+				g_free(thumb_path);
+
+				/* mime_type */
+				printf("mime_type=");
+				if (type)
+					printf("%s/%s%c", type->media_type,
+						type->subtype, term);
+				else
+					printf("%c", term);
+
+				if (!null_term)
+					fputc('\n', stdout);
+
+				g_free(full);
+				diritem_free(item);
 				return EXIT_SUCCESS;
 			}
 			case 'c':

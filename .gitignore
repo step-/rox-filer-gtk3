@@ -14,3 +14,5 @@ ROX-Filer/Help/Manual.html
 
 # Generated translation MO files (PO files are managed)
 ROX-Filer/Messages/*/LC_MESSAGES/ROX-Filer.mo
+
+ROX-Filer/hicolor/icon-theme.cache

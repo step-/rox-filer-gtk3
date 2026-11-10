@@ -2,6 +2,7 @@ SHELL = @SHELL@
 srcdir = @srcdir@
 VPATH = @srcdir@
 PLATFORM_DIR = $(srcdir)/..
+ICON_THEME_DIR = $(srcdir)/../hicolor
 CC = @CC@
 .SUFFIXES:
 .SUFFIXES: .c .o
@@ -55,6 +56,8 @@ OBJECTS = abox.o action.o appinfo.o appmenu.o bind.o bookmarks.o	\
 
 ############ Things to keep the same
 
+all: ${ICON_THEME_DIR}/icon-theme.cache ${PROG}
+
 ${PROG}: ${OBJECTS}
 	${CC} -o "${PROG}" ${OBJECTS} ${LDFLAGS}
 	mv "${PROG}" "${PLATFORM_DIR}"
@@ -64,7 +67,7 @@ ${PROG}: ${OBJECTS}
 	 objcopy --add-gnu-debuglink=ROX-Filer.dbg ROX-Filer)
 
 clean:
-	rm -f *.o *.d Makefile.bak
+	rm -f *.o *.d Makefile.bak ${ICON_THEME_DIR}/icon-theme.cache
 
 Makefile: Makefile.in config.status
 	./config.status
@@ -77,6 +80,9 @@ config.status: configure
 
 configure: configure.in
 	cd $(srcdir) && autoconf
+
+${ICON_THEME_DIR}/icon-theme.cache: ${ICON_THEME_DIR}/index.theme
+	gtk-update-icon-cache "${ICON_THEME_DIR}"
 
 # Compiler-generated header dependencies.
 # One-shot skip: make NODEPS=1 DEPFLAGS=

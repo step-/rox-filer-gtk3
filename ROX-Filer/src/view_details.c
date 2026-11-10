@@ -779,6 +779,9 @@ static gboolean view_details_button_press(GtkWidget *widget,
 	FilerWindow *filer_window = view_details->filer_window;
 	GtkTreeView *tree = (GtkTreeView *) widget;
 
+	/* A click ends the automatic cursor state. */
+	filer_window->provisional_cursor = NULL;
+
 	if (bev->window != gtk_tree_view_get_bin_window(tree))
 		return GTK_WIDGET_CLASS(parent_class)->button_press_event(
 								widget, bev);
@@ -983,6 +986,17 @@ static gboolean view_details_expose(GtkWidget *widget, cairo_t *cr)
 
 	cairo_save(cr);
 	cairo_translate(cr, bin_x, bin_y);
+
+	/* Overlays are drawn in bin-window coordinates. Clip them to the
+	 * visible item area so rows scrolled out of view do not paint over
+	 * the column header or below the viewport. */
+	{
+		GdkWindow *bin_window = gtk_tree_view_get_bin_window(tree);
+		cairo_rectangle(cr, 0, 0,
+				gdk_window_get_width(bin_window),
+				gdk_window_get_height(bin_window));
+		cairo_clip(cr);
+	}
 
 	if (view_details->lasso_box)
 	{
@@ -1871,7 +1885,13 @@ static void view_details_show_cursor(ViewIface *view)
 	 * making the keyboard focus indicator appear on a fresh Details view. */
 	make_iter(view_details, &iter, 0);
 	if (iter.next(&iter))
+	{
 		view_details_cursor_to_iter(view, &iter);
+		/* [20261107103645] The cursor is provisional until the
+		 * user moves it. */
+		view_details->filer_window->provisional_cursor =
+			iter.peek(&iter);
+	}
 
 	/* Grab focus so that the expose handler's gtk_widget_has_focus() test
 	 * passes and the indicator is drawn when the window is active.

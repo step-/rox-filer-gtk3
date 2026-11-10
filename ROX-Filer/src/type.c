@@ -1071,8 +1071,12 @@ out:
  * and return a textual description of it.
  * Only call for non-executable files.
  * g_free() the result.
+ *
+ * When translated is FALSE the fixed strings are plain English, for
+ * machine-readable output such as --property. [20261023060543]
  */
-gchar *describe_current_command(MIME_type *type)
+static gchar *describe_current_command_full(MIME_type *type,
+		gboolean translated)
 {
 	char *handler;
 	char *desc = NULL;
@@ -1083,11 +1087,14 @@ gchar *describe_current_command(MIME_type *type)
 	handler = handler_for(type);
 
 	if (!handler)
-		return g_strdup(_("No run action defined"));
+		return g_strdup(translated ? _("No run action defined")
+				: "No run action defined");
 
 	if (mc_stat(handler, &info) !=0 )
 	{
-		desc = g_strdup_printf(_("Error in handler %s: %s"), handler,
+		desc = g_strdup_printf(translated
+				? _("Error in handler %s: %s")
+				: "Error in handler %s: %s", handler,
 					g_strerror(errno));
 		goto out;
 	}
@@ -1101,8 +1108,9 @@ gchar *describe_current_command(MIME_type *type)
 
 		if (mc_lstat(tmp, &info) != 0 || info.st_uid != dir_uid
 			|| !(info.st_mode & (S_IXUSR | S_IXGRP | S_IXOTH)))
-			desc = g_strdup_printf(
-				_("Invalid application %s (bad AppRun)"),
+			desc = g_strdup_printf(translated
+				? _("Invalid application %s (bad AppRun)")
+				: "Invalid application %s (bad AppRun)",
 				handler);
 		/* Else, just report handler... */
 
@@ -1113,7 +1121,8 @@ gchar *describe_current_command(MIME_type *type)
 
 	if (access(handler, X_OK) != 0)
 	{
-		desc = g_strdup_printf(_("Non-executable %s"), handler);
+		desc = g_strdup_printf(translated ? _("Non-executable %s")
+				: "Non-executable %s", handler);
 		goto out;
 	}
 
@@ -1125,6 +1134,19 @@ out:
 		g_free(handler);
 
 	return desc;
+}
+
+gchar *describe_current_command(MIME_type *type)
+{
+	return describe_current_command_full(type, TRUE);
+}
+
+/* Plain-English variant of describe_current_command(), for output that
+ * must not depend on the locale. g_free() the result. [20261023060543]
+ */
+gchar *describe_current_command_plain(MIME_type *type)
+{
+	return describe_current_command_full(type, FALSE);
 }
 
 /* Display a dialog box allowing the user to set the default run action

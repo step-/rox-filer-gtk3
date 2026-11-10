@@ -10,7 +10,7 @@ echo
 	--keyword=_ --keyword=N_ \
 	--add-comments=TRANSLATORS: \
 	--package-name="rox-filer-gtk3" \
-	--package-version="2026.0.0b2" \
+	--package-version="26.0.0rc1" \
 	--msgid-bugs-address="step.commons@gmail.com" \
 	--copyright-holder="step" \
 	--output=messages.pot *.c tips ../Templates.ui.h \

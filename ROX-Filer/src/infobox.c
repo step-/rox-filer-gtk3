@@ -724,6 +724,22 @@ static GtkWidget *make_details(const gchar *path, DirItem *item,
 		}
 	}
 
+	/* Thumbnail file used for this item, if any. [20261023054830] */
+	{
+		gboolean forcheck = FALSE;
+		GdkPixbuf *thumb;
+
+		thumb = pixmap_try_thumb(path, &forcheck);
+		if (thumb)
+		{
+			gchar *thumb_path;
+
+			g_object_unref(thumb);
+			thumb_path = pixmap_make_thumb_path(path);
+			add_row_and_free(store, _("Thumbnail:"), thumb_path);
+		}
+	}
+
 	if (xattr_supported(NULL)) {
 		add_row(store, _("Extended attributes:"),
 		  (item->flags & ITEM_FLAG_HAS_XATTR)

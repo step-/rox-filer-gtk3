@@ -103,6 +103,7 @@ static void collection_get_preferred_width(GtkWidget *widget,
 static void collection_get_preferred_height(GtkWidget *widget,
 					    gint *minimum_height,
 					    gint *natural_height);
+static gboolean reflow_after_alloc(gpointer data);
 static void collection_size_allocate(GtkWidget 		*widget,
 			     GtkAllocation 	*allocation);
 static void collection_set_adjustment(Collection 	*collection,
@@ -301,7 +302,7 @@ static void collection_init(GTypeInstance *instance, gpointer g_class)
 	object->item_width = 1;
 	object->item_height = 1;
 	object->reached_scale = .0;
-	object->old_height = object->old_pos = 0;
+	object->old_height = object->old_pos = object->old_page = 0;
 	object->vadj = NULL;
 
 	object->items = g_new(CollectionItem, MINIMUM_ITEMS);
@@ -426,6 +427,21 @@ static void collection_get_preferred_height(GtkWidget *widget,
 	*natural_height = height;
 }
 
+/* A resize request made while a size is being allocated is ignored.
+ * Run the extra layout pass from an idle, so that the viewport
+ * recomputes the upper adjustment with the new column count.
+ * [20261101161904]
+ */
+static gboolean reflow_after_alloc(gpointer data)
+{
+	Collection *collection = COLLECTION(data);
+
+	gtk_widget_queue_resize(GTK_WIDGET(collection));
+	g_object_unref(G_OBJECT(collection));
+
+	return FALSE;
+}
+
 static gboolean scroll_after_alloc(Collection *collection)
 {
 	if (collection->wink_item != -1)
@@ -485,20 +501,41 @@ static void collection_size_allocate(GtkWidget *widget,
 	}
 
 	if (collection->old_pos != 0 &&
-		gtk_adjustment_get_value(collection->vadj) > 0
-	){
+		collection->old_height > 0 &&
+		gtk_adjustment_get_value(collection->vadj) > 0)
+	{
+		gdouble page = gtk_adjustment_get_page_size(collection->vadj);
+		gdouble upper = MAX(allocation->height - page, 0.0);
+		gdouble value;
+
+		if (collection->old_page > 0 &&
+			collection->old_pos + collection->old_page >=
+				collection->old_height - 1)
+		{
+			/* The view was at the bottom. Keep the last row in
+			 * view when rows are added or the cells reflow. */
+			value = upper;
+		}
+		else
+		{
+			gdouble anchor = page * 3 / 7;
+			/* Integer division truncates a reflow factor below
+			 * two down to one; keep the anchor proportional.
+			 * [20261101151505] */
+			gdouble ratio =
+				allocation->height / collection->old_height;
+
+			value = (collection->old_pos + anchor) * ratio - anchor;
+		}
+
 		if (collection->winks_left > 0)
 			collection->winks_left += MAX_WINKS - 1;
 
 		gtk_adjustment_set_value(collection->vadj,
-			CLAMP(
-				(allocation->height / collection->old_height) *
-				(collection->old_pos + gtk_adjustment_get_page_size(collection->vadj) * 3/7) -
-				gtk_adjustment_get_page_size(collection->vadj) * 3/7,
-				0,
-				allocation->height - gtk_adjustment_get_page_size(collection->vadj)));
+			CLAMP(value, 0.0, upper));
 
-		collection->old_height = collection->old_pos = 0;
+		collection->old_height = collection->old_pos =
+			collection->old_page = 0;
 		gtk_widget_queue_draw(widget);
 	}
 
@@ -507,9 +544,11 @@ static void collection_size_allocate(GtkWidget *widget,
 	{
 		collection->old_height = allocation->height;
 		collection->old_pos = gtk_adjustment_get_value(collection->vadj);
+		collection->old_page =
+			gtk_adjustment_get_page_size(collection->vadj);
 
-		/* Need to go around again... */
-		gtk_widget_queue_resize(widget);
+		/* Need to go around again... [20261101161904] */
+		g_idle_add(reflow_after_alloc, g_object_ref(collection));
 	}
 	else if (collection->wink_item != -1
 			|| (collection->cursor_item != -1 && cursor_visible)) /* [20260910150134] */
@@ -1270,7 +1309,7 @@ void collection_clear(Collection *collection)
 	collection->item_width = collection->item_height = 1;
 	collection_delete_if(collection, NULL, NULL);
 	collection->center_wink = TRUE;
-	collection->old_height = collection->old_pos = 0;
+	collection->old_height = collection->old_pos = collection->old_page = 0;
 	if (collection->vadj)
 		gtk_adjustment_set_value(collection->vadj, 0);
 }
@@ -1456,27 +1495,44 @@ void collection_set_item_size(Collection *collection, int width, int height)
 
 	widget = GTK_WIDGET(collection);
 
-	collection->item_width = width;
-	collection->item_height = height;
-
-	if (gtk_widget_get_realized(widget))
-	{
-		int window_width;
-
-		window_width = gdk_window_get_width(gtk_widget_get_window(widget));
-		collection->columns = MAX(window_width / collection->item_width,
-					  1);
-		if (collection->cursor_item != -1)
-			scroll_to_show(collection, collection->cursor_item);
-		gtk_widget_queue_draw(widget);
-	}
-
 	{
 		GtkAllocation alloc;
 		gtk_widget_get_allocation(GTK_WIDGET(collection), &alloc);
 		collection->old_height = alloc.height;
 	}
 	collection->old_pos = gtk_adjustment_get_value(collection->vadj);
+	collection->old_page = gtk_adjustment_get_page_size(collection->vadj);
+
+	collection->item_width = width;
+	collection->item_height = height;
+
+	if (gtk_widget_get_realized(widget))
+	{
+		int window_width;
+		gboolean cursor_visible = FALSE;
+
+		window_width =
+			gdk_window_get_width(gtk_widget_get_window(widget));
+		collection->columns =
+			MAX(window_width / collection->item_width, 1);
+
+		/* Only scroll to an on-screen cursor [20261101151505] */
+		if (collection->cursor_item != -1)
+		{
+			int	first, last;
+			int	row, col;
+
+			collection_item_to_rowcol(collection,
+					collection->cursor_item, &row, &col);
+			get_visible_limits(collection, &first, &last);
+			cursor_visible = row >= first && row <= last;
+		}
+
+		if (cursor_visible)
+			scroll_to_show(collection, collection->cursor_item);
+		gtk_widget_queue_draw(widget);
+	}
+
 	gtk_widget_queue_resize(GTK_WIDGET(collection));
 }
 

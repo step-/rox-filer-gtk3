@@ -246,6 +246,14 @@ static GtkWidget	*filer_files_only_menu;
 static GtkWidget	*filer_dirs_only_menu;
 static GtkWidget	*filer_filter_dirs_menu;/* The Filter Dirs item */
 
+/* The Display view items */
+static GtkWidget	*filer_icons_view_menu;
+static GtkWidget	*filer_icons_size_menu;
+static GtkWidget	*filer_icons_time_menu;
+static GtkWidget	*filer_icons_perm_menu;
+static GtkWidget	*filer_icons_type_menu;
+static GtkWidget	*filer_list_view_menu;
+
 /* The Sort items */
 static GtkWidget	*filer_sort_name_menu;
 static GtkWidget	*filer_sort_type_menu;
@@ -441,14 +449,6 @@ GtkWidget *menu_add_stock(GtkWidget *menu,
 	return item;
 }
 
-/* Temporary placeholder for rows with no icon of their own yet. [20260925081702] */
-#define adim(menu, label, cb, action) \
-	menu_add_stock(menu, label, cb, action, "image-missing")
-/* Same placeholder, for rows that wire their own signal. */
-GtkWidget *menu_placeholder_item(const char *label)
-{
-	return menu_item_new_named_image(label, "image-missing");
-}
 static GtkWidget *adt(GtkWidget *menu, gchar *label, MenuCB cb, guint action, GtkWidget **w)
 {
 	GtkWidget *item = gtk_check_menu_item_new_with_label(_(label));
@@ -1047,20 +1047,20 @@ gboolean ensure_filer_menu(void)
 
 	GtkWidget *display_menu = start_menu(N_("_Display"), filer_menu, NULL);
 
-	adim(display_menu, N_("Icons View"            ), view_type, VIEW_TYPE_COLLECTION);
-	adim(display_menu, N_("Icons With Sizes"      ), set_with , DETAILS_SIZE);
-	adim(display_menu, N_("Icons With Times"      ), set_with , DETAILS_TIMES);
-	adim(display_menu, N_("Icons With Permissions"), set_with , DETAILS_PERMISSIONS);
-	adim(display_menu, N_("Icons With Types"      ), set_with , DETAILS_TYPE);
+	GSList *vg = NULL;
+	vg = adr(display_menu, N_("Icons View"            ), view_type, VIEW_TYPE_COLLECTION, vg, &filer_icons_view_menu);
+	vg = adr(display_menu, N_("Icons With Sizes"      ), set_with , DETAILS_SIZE  , vg, &filer_icons_size_menu);
+	vg = adr(display_menu, N_("Icons With Times"      ), set_with , DETAILS_TIMES , vg, &filer_icons_time_menu);
+	vg = adr(display_menu, N_("Icons With Permissions"), set_with , DETAILS_PERMISSIONS, vg, &filer_icons_perm_menu);
+	vg = adr(display_menu, N_("Icons With Types"      ), set_with , DETAILS_TYPE  , vg, &filer_icons_type_menu);
 
-	ads(display_menu, N_("List View"), view_type, VIEW_TYPE_DETAILS,
-			ROX_STOCK_SHOW_DETAILS);
+	     adr(display_menu, N_("List View"             ), view_type, VIEW_TYPE_DETAILS, vg, &filer_list_view_menu);
 
 	add_separator(display_menu);
 
-	sta(ads(display_menu, N_("Bigger Icons"), change_size, 1, "zoom-in"),
+	sta(ads(display_menu, N_("Bigger Icons"), change_size, 1, "rox-zoom-icon"),
 			GDK_KEY_plus, 0);
-	sta(ads(display_menu, N_("Smaller Icons"), change_size, -1, "zoom-out"),
+	sta(ads(display_menu, N_("Smaller Icons"), change_size, -1, "rox-zoom-auto-fit"),
 			GDK_KEY_minus, 0);
 	sta(adt(display_menu, N_("Automatic"), change_size_auto, 0,
 				&filer_auto_size_menu),
@@ -1087,19 +1087,21 @@ gboolean ensure_filer_menu(void)
 			GDK_KEY_h, GDK_CONTROL_MASK);
 	adt(display_menu, N_("Show Only Files"              ), only_dirs, 0, &filer_files_only_menu);
 	adt(display_menu, N_("Show Only Directories"        ), only_dirs, 1, &filer_dirs_only_menu);
-	adim(display_menu, N_("Filter Files..."              ), mini_buffer, MINI_FILTER);
-	adim(display_menu, N_("Temp Filter..."               ), mini_buffer, MINI_TEMP_FILTER);
+	adi(display_menu, N_("Filter Files..."              ), mini_buffer, MINI_FILTER);
+	adi(display_menu, N_("Temp Filter..."               ), mini_buffer, MINI_TEMP_FILTER);
 	adt(display_menu, N_("Filter Directories With Files"), filter_directories, 0,
 			&filer_filter_dirs_menu);
 	adt(display_menu, N_("Show Thumbnails"              ), show_thumbs   , 0,
 			&filer_thumb_menu);
 	ads(display_menu, N_("Refresh"                      ), refresh       , 0,
-			"view-refresh");
+			"rox-refresh-view");
 	ads(display_menu, N_("Refresh Thumbs"               ), refresh_thumbs, 0,
-			"view-refresh");
+			"rox-refresh-view");
 
-	adim(display_menu, N_("Save Display Settings..."           ), save_settings, 0);
-	adim(display_menu, N_("Save Display Settings to parent ..."), save_settings_parent, 0);
+	ads(display_menu, N_("Save Display Settings..."     ), save_settings, 0,
+			"rox-save-display");
+	ads(display_menu, N_("Save Display Settings to parent ..."),
+			save_settings_parent, 0, "rox-save-display");
 
 
 	GtkWidget *file_item;
@@ -1143,7 +1145,7 @@ gboolean ensure_filer_menu(void)
 
 	ads(filer_new_menu, N_("Directory"        ), new_directory, 0, "folder");
 	ads(filer_new_menu, N_("Blank file"       ), new_file     , 0, "document-new");
-	adim(filer_new_menu, N_("Customise Menu..."), customise_new, 0);
+	adi(filer_new_menu, N_("Customise Menu..."), customise_new, 0);
 
 
 	GtkWidget *window_menu = start_menu(N_("_Window"), filer_menu, NULL);
@@ -1161,8 +1163,9 @@ gboolean ensure_filer_menu(void)
 	ads(window_menu, N_("Show Log"             ), show_log        , 0,
 			"dialog-information");
 	filer_follow_sym =
-	adim(window_menu, N_("Follow Symbolic Links"), follow_symlinks , 0);
-	sta(adim(window_menu, N_("Resize Window"        ), resize          , 0),
+	ads(window_menu, N_("Follow Symbolic Links"), follow_symlinks , 0,
+			"emblem-symbolic-link");
+	sta(adi(window_menu, N_("Resize Window"        ), resize          , 0),
 			GDK_KEY_e, GDK_CONTROL_MASK);
 	sta(ads(window_menu, N_("Close Window"         ), close_window    , 0,
 				"window-close"),
@@ -1170,13 +1173,13 @@ gboolean ensure_filer_menu(void)
 
 	add_separator(window_menu);
 
-	sta(adim(window_menu, N_("Enter Path..."     ), mini_buffer, MINI_PATH),
+	sta(adi(window_menu, N_("Enter Path..."     ), mini_buffer, MINI_PATH),
 			GDK_KEY_slash, 0);
-	sta(adim(window_menu, N_("Shell Command..."  ), mini_buffer, MINI_SHELL),
+	sta(adi(window_menu, N_("Shell Command..."  ), mini_buffer, MINI_SHELL),
 			GDK_KEY_exclam, GDK_SHIFT_MASK);
-	sta(adim(window_menu, N_("Terminal Here"     ), xterm_here , FALSE),
+	sta(adi(window_menu, N_("Terminal Here"     ), xterm_here , FALSE),
 			GDK_KEY_grave, 0);
-	adim(window_menu, N_("Switch to Terminal"), xterm_here , TRUE);
+	adi(window_menu, N_("Switch to Terminal"), xterm_here , TRUE);
 
 	filer_pinboard_menu = start_menu(N_("_Pinboard"), filer_menu, NULL);
 
@@ -1184,7 +1187,7 @@ gboolean ensure_filer_menu(void)
 			pinboard_show_backdrop_box, 0, "preferences-system");
 
 	filer_pinboard_panel_item = ads(filer_pinboard_menu, N_("Add _Panel"),
-			NULL, 0, "list-add");
+			NULL, 0, "window-new");
 
 
 	GtkWidget *help_menu = start_menu(N_("_Help"), filer_menu, NULL);
@@ -1197,7 +1200,7 @@ gboolean ensure_filer_menu(void)
 	ads(help_menu, N_("Manual"), menu_rox_help,  HELP_MANUAL,
 				"help-contents");
 
-	adim(filer_menu, N_("Customise Dir Menu..."), customise_directory_menu, 0);
+	adi(filer_menu, N_("Customise Dir Menu..."), customise_directory_menu, 0);
 
 
 	g_signal_connect(filer_menu, "selection-done",
@@ -1320,6 +1323,43 @@ static void rebuild_pinboard_panel_submenu(void)
 			gtk_menu_get_accel_group(GTK_MENU(filer_pinboard_menu)));
 }
 
+/* The Display view rows form one radio group.
+ * Select the row that matches the window state.
+ */
+static void update_view_menu_state(FilerWindow *filer_window)
+{
+	GtkWidget	*item;
+
+	if (filer_window->view_type == VIEW_TYPE_DETAILS)
+	{
+		item = filer_list_view_menu;
+	}
+	else
+	{
+		switch (filer_window->details_type)
+		{
+			case DETAILS_SIZE:
+				item = filer_icons_size_menu;
+				break;
+			case DETAILS_TIMES:
+				item = filer_icons_time_menu;
+				break;
+			case DETAILS_PERMISSIONS:
+				item = filer_icons_perm_menu;
+				break;
+			case DETAILS_TYPE:
+				item = filer_icons_type_menu;
+				break;
+			case DETAILS_NONE:
+			default:
+				item = filer_icons_view_menu;
+				break;
+		}
+	}
+
+	gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(item), TRUE);
+}
+
 /* iter->peek() is the clicked item, or NULL if none */
 void show_filer_menu(FilerWindow *filer_window, GdkEvent *event, ViewIter *iter)
 {
@@ -1399,6 +1439,8 @@ void show_filer_menu(FilerWindow *filer_window, GdkEvent *event, ViewIter *iter)
 		gtk_check_menu_item_set_active(
 				GTK_CHECK_MENU_ITEM(filer_filter_dirs_menu),
 				filer_window->filter_directories);
+
+		update_view_menu_state(filer_window);
 
 		gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(filer_sort_name_menu  ),
 				filer_window->sort_type == SORT_NAME );
@@ -3027,7 +3069,7 @@ static void show_send_to_menu(FilerWindow *fw, GdkEvent *event)
 				gtk_separator_menu_item_new());
 
 	/* Scope-owned by the closure, like the submenu entry [20260911082953]. */
-	item = menu_placeholder_item(_("Customise..."));
+	item = gtk_menu_item_new_with_label(_("Customise..."));
 	g_signal_connect_data(item, "activate",
 			G_CALLBACK(customise_send_to_item), make_sendto_scope(type),
 			(GClosureNotify) sendto_scope_free, 0);
@@ -3054,7 +3096,7 @@ static void show_dir_send_to_menu(GdkEvent *event)
 		g_list_free(widgets);
 	}
 
-	item = menu_placeholder_item(_("Customise Dir menu..."));
+	item = gtk_menu_item_new_with_label(_("Customise Dir menu..."));
 	g_signal_connect_swapped(item, "activate",
 				G_CALLBACK(customise_directory_menu), NULL);
 	gtk_menu_shell_append(GTK_MENU_SHELL(menu), item);
