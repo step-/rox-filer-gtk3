@@ -67,6 +67,12 @@ static void view_details_class_init(gpointer gclass, gpointer data);
 static void view_details_init(GTypeInstance *object, gpointer gclass);
 static void view_details_style_updated(GtkWidget *widget);
 
+static void load_colorder(void);
+static gboolean col_order_ready(ViewDetails *view_details);
+static void apply_col_order(ViewDetails *view_details);
+static void view_details_size_allocate(GtkWidget *widget,
+		GtkAllocation *allocation, ViewDetails *view_details);
+
 static void view_details_iface_init(gpointer giface, gpointer iface_data);
 
 static void view_details_sort(ViewIface *view);
@@ -1322,23 +1328,68 @@ static void defcols(ViewDetails *view_details)
 
 	if (!o_display_save_col_order.int_value) return;
 
-	if (!colorder_loaded)
+	load_colorder();
+	apply_col_order(view_details);
+}
+
+static void load_colorder(void)
+{
+	if (colorder_loaded)
+		return;
+
+	colorder_loaded = TRUE;
+	char *path = choices_find_xdg_path_load("column_order", project_name, SITE);
+	if (path)
 	{
-		colorder_loaded = TRUE;
-		char *path = choices_find_xdg_path_load("column_order", project_name, SITE);
-		if (path)
+		gchar *buffer = NULL;
+		gsize len = 0;
+		if (g_file_get_contents(path, &buffer, &len, NULL))
 		{
-			gchar *buffer = NULL;
-			gsize len = 0;
-			if (g_file_get_contents(path, &buffer, &len, NULL))
-			{
-				if (len <= COL_ITEM)
-					memcpy(colorder, buffer, len);
-				g_free(buffer);
-			}
-			g_free(path);
+			if (len <= COL_ITEM)
+				memcpy(colorder, buffer, len);
+			g_free(buffer);
 		}
+		g_free(path);
 	}
+}
+
+static gboolean col_order_ready(ViewDetails *view_details)
+{
+	if (!gtk_widget_get_mapped(GTK_WIDGET(view_details)))
+		return FALSE;
+
+	for (int i = 0; i < COL_ITEM; i++)
+	{
+		GtkTreeViewColumn *column = view_details->cols[i];
+		GtkWidget *button;
+
+		if (!gtk_tree_view_column_get_visible(column))
+			continue;
+
+		button = gtk_tree_view_column_get_button(column);
+		return button &&
+			gtk_widget_get_allocated_height(button) > 1;
+	}
+
+	return FALSE;
+}
+
+static void apply_col_order(ViewDetails *view_details)
+{
+	if (!o_display_save_col_order.int_value)
+	{
+		view_details->col_order_pending = FALSE;
+		return;
+	}
+
+	if (!view_details->col_order_allocated ||
+	    !col_order_ready(view_details))
+	{
+		view_details->col_order_pending = TRUE;
+		return;
+	}
+
+	view_details->col_order_pending = FALSE;
 
 	ordering = TRUE;
 	for (int i = 0; i < COL_ITEM; i++)
@@ -1349,6 +1400,17 @@ static void defcols(ViewDetails *view_details)
 				view_details->cols[col], NULL);
 	}
 	ordering = FALSE;
+}
+
+static void view_details_size_allocate(GtkWidget *widget,
+		GtkAllocation *allocation, ViewDetails *view_details)
+{
+	view_details->col_order_allocated = TRUE;
+
+	if (view_details->col_order_pending &&
+	    gtk_widget_get_mapped(widget) &&
+	    allocation->height > 1)
+		apply_col_order(view_details);
 }
 
 static void view_details_scroll_to_top(ViewIface *view)
@@ -1389,6 +1451,8 @@ static void view_details_init(GTypeInstance *object, gpointer gclass)
 	view_details->wink_item = -1;
 	view_details->desired_size.width = -1;
 	view_details->desired_size.height = -1;
+	view_details->col_order_allocated = FALSE;
+	view_details->col_order_pending = FALSE;
 	view_details->can_change_selection = 0;
 	view_details->lasso_box = FALSE;
 
@@ -1459,6 +1523,10 @@ static void view_details_init(GTypeInstance *object, gpointer gclass)
 
 	g_signal_connect_after(treeview, "columns-changed",
 			       G_CALLBACK(colchangedcb),
+			       view_details);
+
+	g_signal_connect_after(treeview, "size-allocate",
+			       G_CALLBACK(view_details_size_allocate),
 			       view_details);
 }
 

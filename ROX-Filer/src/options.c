@@ -747,7 +747,7 @@ static void build_section(xmlNode *section, GtkWidget *notebook,
 	gtk_scrolled_window_set_min_content_width(
 			GTK_SCROLLED_WINDOW(sw), 400);
 	gtk_scrolled_window_set_max_content_width(
-			GTK_SCROLLED_WINDOW(sw), 600);
+			GTK_SCROLLED_WINDOW(sw), 1150);
 	gtk_scrolled_window_set_shadow_type(
 			GTK_SCROLLED_WINDOW(sw), GTK_SHADOW_NONE);
 
@@ -843,6 +843,13 @@ static void build_options_window(void)
 
 		gtk_tree_view_expand_all(tree);
 
+		{
+			gint options_width = MIN(screen_width - 40, 800);
+
+			options_width = MAX(options_width, 600);
+			gtk_window_set_default_size(GTK_WINDOW(window),
+					options_width, -1);
+		}
 		rox_dialog_set_parent_full(window, FALSE);
 		gtk_widget_show_all(window);
 

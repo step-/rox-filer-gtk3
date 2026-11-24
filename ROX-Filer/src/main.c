@@ -125,7 +125,7 @@ int opt_view_type = -1;
 		"you must use the short versions instead.\n\n")
 #endif
 
-#define BUGS_TO "<rox-devel@lists.sourceforge.net>"
+#define BUGS_TO "<https://github.com/step-/rox-filer-gtk3/issues>"
 
 #define HELP N_("Usage: ROX-Filer/AppRun [OPTION]... [FILE]...\n"	\
        "Open each directory or file listed, or the current working\n"	\

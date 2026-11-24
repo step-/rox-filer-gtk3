@@ -215,6 +215,8 @@ static void pin_icon_destroyed(PinIcon *pi);
 static void pin_icon_set_tip(PinIcon *pi);
 static void pinboard_show_menu(GdkEventButton *event, PinIcon *pi);
 static void create_pinboard_window(Pinboard *pinboard);
+static void pinboard_scale_factor_changed(GObject *obj, GParamSpec *pspec,
+		Pinboard *pinboard);
 static void reload_backdrop(Pinboard *pinboard,
 			    const gchar *backdrop,
 			    BackdropStyle backdrop_style);
@@ -1141,6 +1143,8 @@ static gint draw_icon(GtkWidget *widget, cairo_t *cr, PinIcon *pi)
 	int		x, y;
 	int		scale_factor;
 	GdkPixbuf	*pixbuf;
+	GdkRGBA		sel_bg = {0, 0, 0, 1};
+	gboolean	painted = FALSE;
 
 	scale_factor = gtk_widget_get_scale_factor(widget);
 
@@ -1159,7 +1163,6 @@ static gint draw_icon(GtkWidget *widget, cairo_t *cr, PinIcon *pi)
 	{
 		GtkStyleContext *style_ctx = gtk_widget_get_style_context(
 				pi->widget);
-		GdkRGBA sel_bg;
 	{
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
@@ -1167,16 +1170,50 @@ static gint draw_icon(GtkWidget *widget, cairo_t *cr, PinIcon *pi)
 				GTK_STATE_FLAG_SELECTED, &sel_bg);
 #pragma GCC diagnostic pop
 	}
-		pixbuf = create_spotlight_pixbuf(image->pixbuf, &sel_bg);
 	}
-	else
-		pixbuf = image->pixbuf;
 
-	gdk_cairo_set_source_pixbuf(cr, pixbuf, x, y);
-	cairo_paint(cr);
+	if (scale_factor > 1 && image->src_pixbuf)
+	{
+		GdkPixbuf *scaled;
 
-	if (icon->selected)
-		g_object_unref(pixbuf);
+		scaled = gdk_pixbuf_scale_simple(image->src_pixbuf,
+				image->width * scale_factor,
+				image->height * scale_factor,
+				GDK_INTERP_BILINEAR);
+		if (scaled)
+		{
+			GdkPixbuf *paint;
+
+			paint = icon->selected
+					? create_spotlight_pixbuf(scaled, &sel_bg)
+					: scaled;
+			cairo_save(cr);
+			cairo_scale(cr, 1.0 / scale_factor, 1.0 / scale_factor);
+			gdk_cairo_set_source_pixbuf(cr, paint,
+					x * scale_factor,
+					y * scale_factor);
+			cairo_paint(cr);
+			cairo_restore(cr);
+			if (icon->selected)
+				g_object_unref(paint);
+			g_object_unref(scaled);
+			painted = TRUE;
+		}
+	}
+
+	if (!painted)
+	{
+		if (icon->selected)
+			pixbuf = create_spotlight_pixbuf(image->pixbuf, &sel_bg);
+		else
+			pixbuf = image->pixbuf;
+
+		gdk_cairo_set_source_pixbuf(cr, pixbuf, x, y);
+		cairo_paint(cr);
+
+		if (icon->selected)
+			g_object_unref(pixbuf);
+	}
 
 	if (item->flags & ITEM_FLAG_SYMLINK)
 	{
@@ -1927,6 +1964,16 @@ static gint shadow_x, shadow_y;
 static cairo_surface_t *backdrop_surface = NULL;
 #define SHADOW_SIZE (ICON_WIDTH)
 
+static void pinboard_bg_color(GtkWidget *window, GdkRGBA *bg)
+{
+	GtkStyleContext *style_ctx = gtk_widget_get_style_context(window);
+
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+	gtk_style_context_get_background_color(style_ctx, GTK_STATE_NORMAL, bg);
+#pragma GCC diagnostic pop
+}
+
 static gboolean bg_draw(GtkWidget *widget,
 			  cairo_t *cr, gpointer data)
 {
@@ -1949,16 +1996,9 @@ static gboolean bg_draw(GtkWidget *widget,
 		}
 		else
 		{
-			GtkStyleContext *style_ctx;
 			GdkRGBA bg;
 
-			style_ctx = gtk_widget_get_style_context(
-					current_pinboard->window);
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
-			gtk_style_context_get_background_color(style_ctx,
-					GTK_STATE_NORMAL, &bg);
-#pragma GCC diagnostic pop
+			pinboard_bg_color(current_pinboard->window, &bg);
 			cairo_set_source_rgb(cr, bg.red, bg.green, bg.blue);
 			cairo_paint(cr);
 		}
@@ -2348,6 +2388,23 @@ static void pinboard_show_menu(GdkEventButton *event, PinIcon *pi)
 	gtk_menu_popup_at_pointer(GTK_MENU(icon_menu), (GdkEvent *) event);
 }
 
+static void pinboard_scale_factor_changed(GObject *obj, GParamSpec *pspec,
+		Pinboard *pinboard)
+{
+	GList *next;
+
+	(void) obj;
+	(void) pspec;
+
+	for (next = pinboard->icons; next; next = next->next)
+	{
+		PinIcon *pi = next->data;
+
+		if (pi->win)
+			gtk_widget_queue_draw(pi->win);
+	}
+}
+
 static void create_pinboard_window(Pinboard *pinboard)
 {
 	GtkWidget	*win;
@@ -2395,6 +2452,8 @@ static void create_pinboard_window(Pinboard *pinboard)
 			G_CALLBACK(button_release_event), NULL);
 	g_signal_connect(win, "motion-notify-event",
 			G_CALLBACK(lasso_motion), NULL);
+	g_signal_connect(win, "notify::scale-factor",
+			G_CALLBACK(pinboard_scale_factor_changed), pinboard);
 	g_signal_connect(pinboard->fixed, "draw",
 			G_CALLBACK(bg_draw), NULL);
 
@@ -2646,6 +2705,65 @@ static gboolean backdrop_from_child(GIOChannel *source,
 	return TRUE;
 }
 
+/* Publish the pinboard background as the root window pixmap. External
+ * programs read it in physical screen coordinates. */
+static void set_root_pixmap(Pinboard *pinboard, cairo_surface_t *surface,
+			    const GdkRGBA *bg)
+{
+	Display *dpy = GDK_DISPLAY_XDISPLAY(
+			gtk_widget_get_display(pinboard->window));
+	int scale = gtk_widget_get_scale_factor(pinboard->window);
+	int pw = screen_width;
+	int ph = screen_height;
+	Pixmap xpm;
+	cairo_surface_t *xlib_surface;
+	cairo_t *cr;
+
+	if (scale < 1)
+	{
+		scale = 1;
+	}
+
+	xpm = XCreatePixmap(dpy,
+			GDK_WINDOW_XID(gtk_widget_get_window(pinboard->window)),
+			pw * scale, ph * scale,
+			DefaultDepth(dpy, DefaultScreen(dpy)));
+	xlib_surface = cairo_xlib_surface_create(dpy, xpm,
+			DefaultVisual(dpy, DefaultScreen(dpy)),
+			pw * scale, ph * scale);
+	cairo_surface_set_device_scale(xlib_surface, scale, scale);
+	cr = cairo_create(xlib_surface);
+
+	if (surface)
+	{
+		cairo_pattern_t *pattern =
+			cairo_pattern_create_for_surface(surface);
+
+		cairo_pattern_set_extend(pattern, CAIRO_EXTEND_REPEAT);
+		cairo_set_source(cr, pattern);
+		cairo_paint(cr);
+		cairo_pattern_destroy(pattern);
+	}
+	else
+	{
+		cairo_set_source_rgb(cr, bg->red, bg->green, bg->blue);
+		cairo_paint(cr);
+	}
+
+	cairo_destroy(cr);
+	cairo_surface_destroy(xlib_surface);
+
+	{
+		XID id = xpm;
+
+		gdk_property_change(gdk_get_default_root_window(),
+				gdk_atom_intern("_XROOTPMAP_ID", FALSE),
+				gdk_atom_intern("PIXMAP", FALSE),
+				32, GDK_PROP_MODE_REPLACE,
+				(guchar *) &id, 1);
+	}
+}
+
 static void reload_backdrop(Pinboard *pinboard,
 			    const gchar *backdrop,
 			    BackdropStyle backdrop_style)
@@ -2715,39 +2833,12 @@ static void reload_backdrop(Pinboard *pinboard,
 
 	gtk_widget_queue_draw(pinboard->window);
 
-	/* Also update root window property (for transparent xterms, etc) */
-	if (backdrop_surface)
+	/* Also update root window property (for transparent xterms, etc). */
 	{
-		Display *dpy = GDK_DISPLAY_XDISPLAY(
-				gtk_widget_get_display(pinboard->window));
-		int pw = cairo_image_surface_get_width(backdrop_surface);
-		int ph = cairo_image_surface_get_height(backdrop_surface);
-		Pixmap xpm = XCreatePixmap(dpy,
-				GDK_WINDOW_XID(
-					gtk_widget_get_window(pinboard->window)),
-				pw, ph,
-				DefaultDepth(dpy, DefaultScreen(dpy)));
-		cairo_surface_t *xlib_surface = cairo_xlib_surface_create(
-				dpy, xpm,
-				DefaultVisual(dpy, DefaultScreen(dpy)),
-				pw, ph);
-		cairo_t *cr2 = cairo_create(xlib_surface);
-		cairo_set_source_surface(cr2, backdrop_surface, 0, 0);
-		cairo_paint(cr2);
-		cairo_destroy(cr2);
-		cairo_surface_destroy(xlib_surface);
+		GdkRGBA bg;
 
-		XID id = xpm;
-		gdk_property_change(gdk_get_default_root_window(),
-				gdk_atom_intern("_XROOTPMAP_ID", FALSE),
-				gdk_atom_intern("PIXMAP", FALSE),
-				32, GDK_PROP_MODE_REPLACE,
-				(guchar *) &id, 1);
-	}
-	else
-	{
-		gdk_property_delete(gdk_get_default_root_window(),
-				gdk_atom_intern("_XROOTPMAP_ID", FALSE));
+		pinboard_bg_color(pinboard->window, &bg);
+		set_root_pixmap(pinboard, backdrop_surface, &bg);
 	}
 }
 

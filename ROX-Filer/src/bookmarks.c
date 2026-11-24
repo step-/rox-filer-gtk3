@@ -961,6 +961,7 @@ static GtkWidget *build_history_menu(FilerWindow *filer_window)
 	GList	  *next;
 
 	menu = gtk_menu_new();
+	gtk_widget_set_name(menu, "rox-recents-menu");
 
 	if (!history)
 		return menu;
@@ -1158,6 +1159,7 @@ static GtkWidget *build_groups_menu(FilerWindow *filer_window)
 	int		i;
 
 	menu = gtk_menu_new();
+	gtk_widget_set_name(menu, "rox-groups-menu");
 
 	for (i = 0; i <= 9; i++)
 	{
@@ -1254,6 +1256,7 @@ static GtkWidget *bookmarks_build_menu(FilerWindow *filer_window)
 		icon_group = gtk_size_group_new(GTK_SIZE_GROUP_HORIZONTAL);
 
 	menu = gtk_menu_new();
+	gtk_widget_set_name(menu, "rox-bookmarks-menu");
 
 	/* Per-window navigation [20260825105933]. The menu is rebuilt
 	 * on every popup, so sensitivity mirrors the current stacks. */

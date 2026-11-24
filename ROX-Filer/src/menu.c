@@ -1008,6 +1008,8 @@ static void build_file_menu_contents(GtkWidget *menu, FileMenu *fm)
 
 	fm->shift_item = ads(menu, N_("Shift Open"), file_op, FILE_OPEN_FILE,
 			"text-x-generic");
+	g_object_set_data(G_OBJECT(fm->shift_item), "is-shift-open",
+			GINT_TO_POINTER(TRUE));
 
 	add_separator(menu);
 
@@ -1260,6 +1262,29 @@ static void menu_select_repaint_alloc(GtkWidget *widget,
 	gtk_widget_queue_draw(widget);
 }
 
+static void popup_menu_at_event(GtkMenu *menu, GdkEvent *event)
+{
+	if (event && (event->type == GDK_BUTTON_PRESS ||
+			event->type == GDK_BUTTON_RELEASE))
+	{
+		GdkEventButton *bev = (GdkEventButton *) event;
+		GdkRectangle rect = { bev->x_root, bev->y_root, 1, 1 };
+		GdkScreen *screen = gtk_widget_get_screen(GTK_WIDGET(menu));
+		GdkWindow *root = screen ?
+			gdk_screen_get_root_window(screen) : NULL;
+
+		if (root)
+		{
+			gtk_menu_popup_at_rect(menu, root, &rect,
+					GDK_GRAVITY_SOUTH_EAST,
+					GDK_GRAVITY_NORTH_WEST, event);
+			return;
+		}
+	}
+
+	gtk_menu_popup_at_pointer(menu, event);
+}
+
 /*
  * 'item' is the number of the logical item to pre-select for keyboard users.
  * Unlike GTK2 ROX-Filer, physical pointer alignment is surrendered to GTK.
@@ -1283,7 +1308,7 @@ void show_popup_menu(GtkWidget *menu, GdkEvent *event, int item)
 			G_CALLBACK(menu_select_repaint_alloc),
 			GINT_TO_POINTER(is_keyboard ? item : -1));
 
-	gtk_menu_popup_at_pointer(GTK_MENU(menu), event);
+	popup_menu_at_event(GTK_MENU(menu), event);
 }
 
 /* Hide the popup menu, if any */
@@ -1698,6 +1723,9 @@ void menu_show_shift_action(GtkWidget *menu_item, DirItem *item, gboolean next)
 static void view_type(gpointer data, guint action, GtkWidget *widget)
 {
 	ViewType view_type = (ViewType) action;
+
+	if (updating_menu)
+		return;
 
 	g_return_if_fail(window_with_focus != NULL);
 
@@ -3458,7 +3486,14 @@ static void walk_menu_items(GtkWidget *menu, GtkTreeIter *parent,
 			continue;
 		}
 
-		label = menu_item_label_text(GTK_MENU_ITEM(child));
+		if (g_object_get_data(G_OBJECT(child), "is-shift-open"))
+		{
+			label = _("Shift Open (dynamic action)");
+		}
+		else
+		{
+			label = menu_item_label_text(GTK_MENU_ITEM(child));
+		}
 		if (!label || label[0] == '\0')
 			continue;
 

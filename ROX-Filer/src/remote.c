@@ -165,8 +165,8 @@ gboolean remote_init(xmlDocPtr rpc, gboolean new_copy, gboolean disable_rpc)
 	soap_register("PinboardRemove", rpc_PinboardRemove, "Path", "Label");
 	soap_register("PanelAdd", rpc_PanelAdd, "Side,Path", "Label,After,Shortcut,Args,Locked");
 	soap_register("PanelRemove", rpc_PanelRemove, "Side", "Path,Label");
- 	soap_register("SetIcon", rpc_SetIcon, "Path,Icon", NULL);
- 	soap_register("UnsetIcon", rpc_UnsetIcon, "Path", NULL);
+	soap_register("SetIcon", rpc_SetIcon, "Path,Icon", "Type");
+	soap_register("UnsetIcon", rpc_UnsetIcon, "Path", NULL);
 	soap_register("ReloadCSS", rpc_ReloadCSS, NULL, NULL);
 	soap_register("ShowOptions", rpc_ShowOptions, NULL, NULL);
 	soap_register("Exit", rpc_Exit, NULL, "Force");
@@ -720,15 +720,20 @@ static GList *list_value(xmlNode *arg)
 
 static xmlNodePtr rpc_SetIcon(GList *args)
 {
-	char	   *path, *icon;
+	char	   *path, *icon, *type;
 
 	path = string_value(ARG(0));
 	icon = string_value(ARG(1));
+	type = string_value(ARG(2));
 
-	add_globicon(path,icon);
+	if (type && strcmp(type, "theme") == 0)
+		add_named_globicon(path, icon);
+	else
+		add_globicon(path, icon);
 
 	g_free(path);
 	g_free(icon);
+	g_free(type);
 
 	return NULL;
 }

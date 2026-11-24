@@ -2224,3 +2224,40 @@ GdkPixbuf *theme_load_icon(const gchar *icon_name, gint size,
 	return result;
 }
 
+/* https://whot.pages.freedesktop.org/xdg-specs/icon-theme-spec/latest/ar01s03.html */
+static gchar *strip_theme_icon_suffix(const gchar *icon_name)
+{
+	const gchar *extension = strrchr(icon_name, '.');
+
+	if (extension && (strcmp(extension, ".png") == 0 ||
+			strcmp(extension, ".xpm") == 0 ||
+			strcmp(extension, ".svg") == 0))
+	{
+		return g_strndup(icon_name, extension - icon_name);
+	}
+	return g_strdup(icon_name);
+}
+
+gchar *theme_resolve_icon_filename(const gchar *icon_name)
+{
+	gchar *name;
+	gchar *result = NULL;
+	GtkIconInfo *info;
+	const gchar *filename;
+
+	g_return_val_if_fail(icon_name != NULL, NULL);
+
+	name = strip_theme_icon_suffix(icon_name);
+	info = theme_lookup_icon(name, thumb_size, 0);
+	g_free(name);
+
+	if (!info)
+		return NULL;
+
+	filename = gtk_icon_info_get_filename(info);
+	if (filename)
+		result = g_strdup(filename);
+	g_object_unref(info);
+
+	return result;
+}

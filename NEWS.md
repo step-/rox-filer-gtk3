@@ -3,6 +3,8 @@
 
 *Contents*
 * [Unreleased]
+* [Release candidate 2 2026-11-24]
+* [Release candidate 1 2026-11-10]
 * [Beta 2 test 2026-10-21]
 * [Beta 1 test 2026-10-14]
 * [Alpha 3 test 2026-09-15]
@@ -12,6 +14,9 @@
 ---
 
 **All together:**
+[New since release candidate 1] ·
+[Changed since release candidate 1] ·
+[Fixed since release candidate 1] ·
 [New since beta 2] ·
 [Changed since beta 2] ·
 [Fixed since beta 2] ·
@@ -66,6 +71,60 @@
 ---
 
 ## Unreleased
+
+## Release candidate 2 2026-11-24
+
+*Contents*
+* [New since release candidate 1]
+* [Changed since release candidate 1]
+* [Fixed since release candidate 1]
+
+Commit: af37275
+
+### New since release candidate 1
+
+* Pinboard and Panel icons are sharp on HiDPI displays.
+
+* The Set Icon dialog and the `SetIcon` SOAP method accept named icons.
+  The `globicons` file can store them. An `<icon type="theme">name</icon>`
+  entry resolves the name through the icon theme.
+
+  **Backward compatibility:** Older ROX-Filer versions accept the new file and
+  ignore the attribute. However, if an old binary rewrites the new `globicons`,
+  the theme attributes disappear, therefore a new binary can no longer resolve
+  the names to icon paths.
+
+### Changed since release candidate 1
+
+* The Filer Windows tab of the Options dialog displays exactly one
+  item per row.
+
+* The Keyboard Shortcuts dialog lists the Shift Open dynamic action under `File`
+  as `Shift Open (dynamic action)`. Its label in the right-click menu varies
+  depending on the selected item: `Unmount`, `Open unmounted`, `Show Target`,
+  `Look Inside`, or `Open As Text`.
+
+### Fixed since release candidate 1
+
+* Pseudo-transparent windows such as conky show the pinboard backdrop on
+  HiDPI-scaled displays.
+
+* Pseudo-transparent windows such as conky show a `Tiled` pinboard backdrop,
+  and the root window repeats the tile.
+
+* Pseudo-transparent windows such as conky show the pinboard background
+  color when the pinboard has no backdrop.
+
+* The Recently Visited menu no longer closes early when the GTK3 theme
+  pads the menu.
+
+* The first right-click menu now opens at the pointer. Opening it no longer
+  resets the view to the first row.
+
+* The Options dialog now opens wide enough to show the full toolbar.
+  Toolbar overflow menu items now show their labels.
+
+* The List view applies the saved column order after the view is allocated.
 
 ## Release candidate 1 2026-11-10
 
@@ -771,6 +830,11 @@ How to try: change the minibuffer colors via the [Instance stylesheet].
 [ROX-Filer2]: https://forum.puppylinux.com/viewtopic.php?t=17225
 
 [Unreleased]: #unreleased
+[Release candidate 2 2026-11-24]: #release-candidate-2-2026-11-24
+[Release candidate 2]: #release-candidate-2
+[New since release candidate 1]: #new-since-release-candidate-1
+[Changed since release candidate 1]: #changed-since-release-candidate-1
+[Fixed since release candidate 1]: #fixed-since-release-candidate-1
 [Release candidate 1 2026-11-10]: #release-candidate-1-2026-11-10
 [Release candidate 1]: #release-candidate-1
 [New since beta 2]: #new-since-beta-2

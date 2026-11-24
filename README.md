@@ -12,6 +12,8 @@ Project focus: Correctness and compatibility.
 
 The [NEWS] file details rox-filer-gtk3.
 
+Report bugs to: <https://github.com/step-/rox-filer-gtk3/issues>.
+
 [jun7 fork]: https://github.com/jun7/rox-filer
 [Fatdog64 Linux]: https://distro.ibiblio.org/fatdog/web
 [NEWS]: NEWS.md

@@ -225,7 +225,7 @@ GString *css_build_internal(gboolean dump)
 		"}\n"
 		"\n"
 		"#rox-toolbar #gtk-toolbar-arrow {\n"
-		"  color: currentColor\n"
+		"  color: currentColor;\n"
 		"}\n");
 
 	/* Scrollbar trough — opaque to prevent desktop bleed-through
@@ -238,6 +238,15 @@ GString *css_build_internal(gboolean dump)
 		"}\n"
 		"scrollbar slider {\n"
 		"  background-color: alpha(currentColor, 0.5);\n"
+		"}\n");
+
+	/* [20261115144259] */
+	g_string_append(css, "\n"
+		"/* Cap GTK menu padding otherwise it can break Recently Visited selection. */\n"
+		"/* The submenus are #rox-recents-menu and #rox-groups-menu. */\n"
+		"#rox-bookmarks-menu menu {\n"
+		"  padding-left: 1px;\n"
+		"  padding-right: 1px;\n"
 		"}\n");
 
 	return css;

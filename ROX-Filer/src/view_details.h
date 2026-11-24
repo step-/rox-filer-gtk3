@@ -59,6 +59,9 @@ struct _ViewDetails {
 
 	GtkRequisition desired_size;
 
+	gboolean	col_order_allocated;
+	gboolean	col_order_pending;
+
 	gboolean	lasso_box;
 	int		lasso_start_index;
 	int		drag_box_x[2];	/* Index 0 is the fixed corner */

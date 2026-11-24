@@ -1,5 +1,8 @@
 #!/bin/sh
 
+# Usage: update-po [--pot-only] [FILE.po ...]
+# --pot-only          create ../messages.pot and exit
+
 echo "Extracting messages from source files..."
 echo
 
@@ -10,13 +13,22 @@ echo
 	--keyword=_ --keyword=N_ \
 	--add-comments=TRANSLATORS: \
 	--package-name="rox-filer-gtk3" \
-	--package-version="26.0.0rc1" \
-	--msgid-bugs-address="step.commons@gmail.com" \
+	--package-version="26.0.0rc2" \
+	--msgid-bugs-address="<https://github.com/step-/rox-filer-gtk3/issues>" \
 	--copyright-holder="step" \
-	--output=messages.pot *.c tips ../Templates.ui.h \
+	--output=messages.pot *.c tips ../Templates.ui.h &&
+sed -i -e '
+	1 s/.*/# Translation template for the rox-filer-gtk3 file manager for X11/
+	2 s/.*/# Copyright (C) 2026 step <step.commons@gmail.com>/
+	' messages.pot
 )
+ret=$?
 
 echo
+
+if [ "$1" = "--pot-only" ]; then
+	exit $ret
+fi
 
 if [ $? = 0 ]; then
 	echo "Updating all .po files..."

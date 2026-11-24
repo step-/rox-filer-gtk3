@@ -1,35 +1,32 @@
 <?xml version='1.0' encoding='UTF-8'?>
 <options>
   <section title='Filer windows'>
-    <frame label='Auto-resize filer windows'>
-      <radio-group name='filer_auto_resize'>
-        <radio label='Never automatically resize' value='2'>You'll have to resize windows manually, using the window manager, the `Resize Window' menu entry or by double-clicking on the window background.</radio>
-        <radio label='Resize when changing the display style' value='0'>Changing the size of the icons or which details are displayed will resize the window for you.</radio>
-        <radio label='Always resize' value='1'>The filer will resize windows whenever it seems useful (that is, when changing directory or display style).</radio>
+    <frame label="Auto-resize filer windows">
+      <radio-group name="filer_auto_resize">
+        <radio label="Never automatically resize" value="2">You'll have to resize windows manually, using the window manager, the `Resize Window' menu entry or by double-clicking on the window background.</radio>
+        <radio label="Resize when changing the display style" value="0">Changing the size of the icons or which details are displayed will resize the window for you.</radio>
+        <radio label="Always resize" value="1">The filer will resize windows whenever it seems useful (that is, when changing directory or display style).</radio>
       </radio-group>
-	<hbox>
-		<numentry name='filer_size_limit' label='Largest window size:' unit='%' min='1' max='100' width='3'>
-			The largest size, as a percentage of the screen size, that the auto-resizer will resize a window to.</numentry>
-		<spacer/>
-		<numentry name='filer_width_limit' label='Largest window width:' unit='%' min='0' max='100' width='3'>
-			The largest width, as a percentage of the screen size, that the auto-resizer will resize a window to.</numentry>
-	</hbox>
+      <grid row-spacing="4" column-spacing="12">
+        <label col="0" row="0">Largest window size:</label>
+        <hbox col="1" row="0">
+          <numentry name="filer_size_limit" unit="%" min="1" max="100" width="3">The largest size, as a percentage of the screen size, that the auto-resizer will resize a window to.</numentry>
+        </hbox>
+        <label col="0" row="1">Largest window width:</label>
+        <hbox col="1" row="1">
+          <numentry name="filer_width_limit" unit="%" min="0" max="100" width="3">The largest width, as a percentage of the screen size, that the auto-resizer will resize a window to.</numentry>
+        </hbox>
+      </grid>
     </frame>
-    <frame label='Window behaviour'>
-      <hbox>
-        <vbox>
-          <toggle name='filer_short_flag_names' label='Short titlebar flags'>Use single letters instead of words for Scanning, All and Thumbs indicators in the titlebar.</toggle>
-          <toggle name='filer_unique_windows' label='Unique windows'>If you open a directory and that directory is already displayed in another window, then this option causes the other window to be closed.</toggle>
-          <toggle name='close_dir_when_missing' label='Close window when dir missing'>If a directory that is open in a window disappears, (deleted or unmounted) automatically close window.</toggle>
-          <toggle name='window_link' label='Window Link'>If this is on and you open a directory by middle button, the new window and the source window are toggled into link mode. In link mode, left-click a directory to open it in a window placed to the right of the source window. If this value is off, ctrl + middle button toggles the linked window.</toggle>
-        </vbox>
-        <vbox>
-          <toggle name='bind_new_button_1' label='New window on button 1'>Clicking with mouse button 1 (usually the left button) opens a directory in a new window with this turned on. Clicking with the button-2 (middle) will reuse the current window.</toggle>
-          <toggle name='bind_single_click' label='Single-click navigation'>Clicking on an item opens it with this on. Hold down Control to select the item instead. If off, clicking once selects an item; double click to open things.</toggle>
-          <toggle name='group_digits_modifier' label='Digits select, Alt+digit jumps to groups'>Typing a digit starts a progressive Reg Select for names beginning with that digit, instead of jumping to a numbered group (a saved directory plus the saved file selection, if any). Saved groups are then jumped to with Alt+digit, which returns to the saved directory and reselects the saved files; saving with Control+digit is unchanged. Off keeps the classic bindings (bare digit jumps).</toggle>
-          <toggle name='bind_dclick_resizes' label='Double-click on background resizes'>If on then double clicking on the window background resizes the window, just like clicking on the Automatic size mode button in the toolbar.</toggle>
-        </vbox>
-      </hbox>
+    <frame label="Window behaviour">
+      <toggle name="filer_short_flag_names" label="Short titlebar flags">Use single letters instead of words for Scanning, All and Thumbs indicators in the titlebar.</toggle>
+      <toggle name="filer_unique_windows" label="Unique windows">If you open a directory and that directory is already displayed in another window, then this option causes the other window to be closed.</toggle>
+      <toggle name="close_dir_when_missing" label="Close window when dir missing">If a directory that is open in a window disappears, (deleted or unmounted) automatically close window.</toggle>
+      <toggle name="window_link" label="Window Link">If this is on and you open a directory by middle button, the new window and the source window are toggled into link mode. In link mode, left-click a directory to open it in a window placed to the right of the source window. If this value is off, ctrl + middle button toggles the linked window.</toggle>
+      <toggle name="bind_new_button_1" label="New window on button 1">Clicking with mouse button 1 (usually the left button) opens a directory in a new window with this turned on. Clicking with the button-2 (middle) will reuse the current window.</toggle>
+      <toggle name="bind_single_click" label="Single-click navigation">Clicking on an item opens it with this on. Hold down Control to select the item instead. If off, clicking once selects an item; double click to open things.</toggle>
+      <toggle name="group_digits_modifier" label="Digits select, Alt+digit jumps to groups">Typing a digit starts a progressive Reg Select for names beginning with that digit, instead of jumping to a numbered group (a saved directory plus the saved file selection, if any). Saved groups are then jumped to with Alt+digit, which returns to the saved directory and reselects the saved files; saving with Control+digit is unchanged. Off keeps the classic bindings (bare digit jumps).</toggle>
+      <toggle name="bind_dclick_resizes" label="Double-click on background resizes">If on then double clicking on the window background resizes the window, just like clicking on the Automatic size mode button in the toolbar.</toggle>
     </frame>
     <frame label='Sorting'>
       <toggle name='display_dirs_first' label='Directories come first (for sort by name)'>If this is on then directories will always appear before anything else when sorting by name.</toggle>
@@ -358,9 +355,9 @@ xterm -e wget $1</entry>
 	  <item label='Small Icons' value='1'/>
 	  <item label='Large Icons' value='2'/>
 	  <item label='Huge Icons' value='3'/>
-	  <!-- Withdrawn [20260924203220]: the icon view no longer drives the
-	       menu icon size. The values stay reserved, because a legacy
-	       Options file may still hold one, so neither may be reused. -->
+	  <!-- Withdrawn [20260924203220]: the icon view no longer
+	       drives the menu icon size. These values stay reserved
+	       because a legacy Options file may still hold them. -->
 	  <!-- <item label='Same as current window' value='4'/> -->
 	  <!-- <item label='Same as default' value='5'/> -->
 	</menu>

@@ -15,6 +15,7 @@ MaskedPixmap *get_globicon(const gchar *path);
 gchar *get_globicon_path(const gchar *path);
 void icon_set_handler_dialog(DirItem *item, const gchar *path);
 void add_globicon(const gchar *path, const gchar *icon);
+void add_named_globicon(const gchar *path, const gchar *icon);
 void delete_globicon(const gchar *path);
 
 #endif

@@ -500,7 +500,7 @@
      <row><entry>Hold mouse over an item</entry><entry>
        Shows a tooltip containing a brief description of an application (if
        available), the target of a symbolic link, and the full name of a file,
-       if it's too long to show in the main window.
+       if it is too long to show in the main window.
      </entry></row>
 
      <row><entry><keycap>Shift</keycap>+<keycap>Menu</keycap></entry><entry>
@@ -526,6 +526,14 @@
    to the item you want to use, double-click the Shortcut cell and press the key
    combination. To unset a key-binding double-click the cell and press
    <keycap>Backspace</keycap>.
+  </para>
+  <para>
+   The <guimenuitem>Shift Open (dynamic action)</guimenuitem> entry in the
+   Keyboard Shortcuts dialog corresponds to the context-dependent item in
+   the right-click menu, whose label varies depending on the selected item
+   type (for example, <guimenuitem>Look Inside</guimenuitem> or
+   <guimenuitem>Open As Text</guimenuitem>). Assigning a shortcut to this
+   entry activates the corresponding menu action.
   </para>
  </chapter>
 
@@ -1521,7 +1529,7 @@
     standard input before deleting the image.
    </para><para>
     If the application wishes to show a sequence of images it should still read "ok\n",
-    then wait until it's time to display the next image and then write that filename, and
+    then wait until it is time to display the next image and then write that filename, and
     so on.
    </para><para>
     The filer will indicate that the program should stop running by closing the two
@@ -2329,7 +2337,7 @@ generated.
      IsReg and nlinks &gt; 1</screen>
     The first finds files modified within the last 24 hours. You could
     use <userinput>&gt;</userinput> instead of <userinput>after</userinput>,
-    but it's not so clear what is meant.
+    but it is not so clear what is meant.
     </para><para>
     The second finds files larger than 10 Mb. The last finds regular files with
     more than one directory entry.
@@ -2455,7 +2463,7 @@ generated.
   </para>
 
   <sect1>
-   <title><anchor id="RunAction" xreflabel="the Set Run Action box"/>
+   <title><anchor id="RunAction" xreflabel="The Set Run Action box"/>
     The Set Run Action box
    </title>
    <para>
@@ -2518,26 +2526,55 @@ generated.
     the file.
     </para><para>
     It works much like the Set Run Action box described above, except that
-    you may specifiy an icon for one file individually (by name) as well as
-    for all files of a particular type. When setting the icon for a single
-    file, the filer stores the name of the file and the name of the icon inside
-    your <filename>~/.config/rox.sourceforge.net/MIME-icons</filename>
-    directory. If either moves, the icon won't be displayed.
+    you can specify an icon for one file or for all files of a particular
+    type. The dialog shows the file name above a frame. The frame displays
+    different content according to which radio button is selected.
     </para><para>
-    When setting the icon for a directory, you have the additional option of
-    storing the image inside the directory itself as a hidden file. This means
-    that other users will see the icon too, and you can safely delete the original
-    image after the copy (note that the image is scaled down if needed, and converted
-    to PNG format).
+    The <guilabel>Drop an icon file here</guilabel> frame stores the path of an
+    icon file for one file. The entry is saved in
+    <filename>~/.config/rox.sourceforge.net/ROX-Filer/globicons</filename>.
+    If either the file or the icon moves, the icon is not displayed.
     </para><para>
-    The directory icon inside the <guilabel>Drop an icon here</guilabel>
-    area allows you to quickly get to a directory from which you are already
-    using one or more icons.
+    The <guilabel>Use a theme icon for this file</guilabel> frame stores an
+    icon name for one file. Type a name such as <literal>user-home</literal>
+    and press <guibutton>Set</guibutton>. The filer looks up the name in the
+    current icon theme and saves the name in <filename>globicons</filename>.
+    If the theme changes, the displayed icon can change.
+    </para><para>
+    You can also edit <filename>globicons</filename> directly:
+    <programlisting>
+&lt;special-files&gt;
+  &lt;rule match="/home/user/Reports"&gt;
+    &lt;icon&gt;/home/user/icons/reports.png&lt;/icon&gt;
+  &lt;/rule&gt;
+  &lt;rule match="/usr/bin/rox"&gt;
+    &lt;icon type="theme"&gt;system-file-manager&lt;/icon&gt;
+  &lt;/rule&gt;
+&lt;/special-files&gt;</programlisting>
+     The <literal>match</literal> value is an exact path after
+     <literal>~</literal> expansion. Older versions of ROX-Filer ignore
+     <literal>type</literal> and treat the value as a path. They remove the
+     attribute if they rewrite the file.
+     </para><para>
+     To set the icon for all files of a type, the filer stores the image
+     as explained in the <xref linkend="FiletypeStore"/> section.
+     </para><para>
+     When setting the icon for a directory, you have the additional option of
+     storing the image inside the directory itself as a hidden file. This means
+     that other users will see the icon too, and you can safely delete the original
+     image after the copy (note that the image is scaled down if needed, and converted
+     to PNG format).
+     </para><para>
+     The <guibutton>Show</guibutton> button inside the <guilabel>Drop an icon file here</guilabel>
+     frame allows you to quickly get to the directory that contains the image file.
    </para>
   </sect1>
 
   <sect1>
-   <title>How filetypes are stored</title>
+   <title>
+    <anchor id="FiletypeStore" xreflabel="How filetypes are stored"/>
+    How filetypes are stored
+   </title>
    <para>
 
     <application>ROX-Filer</application> uses two sub-directories in your
@@ -2551,11 +2588,11 @@ generated.
         is run when you click on the file you should normally use the <guimenuitem>Set
          Run Action...</guimenuitem> feature (see the <xref linkend="RunAction"/> section).
         However, you can also set the actions manually &mdash; for example, to make
-        opening an HTML file load it into Netscape:
+        opening an HTML file load it into the browser:
 
         <orderedlist>
          <listitem><para>
-           Find the Netscape application and go to <guimenuitem>Link...</guimenuitem>
+           Find the the browser application and go to <guimenuitem>Link...</guimenuitem>
            on the menu.
          </para></listitem>
 
@@ -2827,7 +2864,7 @@ generated.
      <listitem><para>Edit the file by hand as before, filling in the new blanks
        and updating out-of-date translations.
        Look out for <computeroutput>fuzzy</computeroutput> entries where
-       <command>update-po</command> has made a guess; check it's correct and
+       <command>update-po</command> has made a guess; check it is correct and
        remove the <computeroutput>fuzzy</computeroutput> line.
      </para></listitem>
 
@@ -3511,7 +3548,7 @@ then this must match the label of the item.  If more than one item matches, only
       &lt;ROX:CanSetBackdrop xmlns:ROX="http://rox.sourceforge.net/SOAP/ROX-Filer"/>
 &lt;/AppInfo&gt;</programlisting>
      The application will be run with the <option>--backdrop</option> option
-     as it's only argument after invoking this method, and whenever the pinboard is
+     as its only argument after invoking this method, and whenever the pinboard is
      reloaded. DO NOT use this method if invoked with <option>--backdrop</option> or
      you will get stuck in an infinite loop!
      See <xref linkend="backdropapp"/> for a guide to writing backdrop applications.
@@ -3548,8 +3585,13 @@ then this must match the label of the item.  If more than one item matches, only
 
    <listitem><para><function>SetIcon</function>(<parameter>Path</parameter>,
    <parameter>Icon</parameter>)
-     Set the icon to use for the given path. This is equivalent to using the
-     <guimenuitem>Set Icon...</guimenuitem> menu item.
+     Set the icon to use for the given path. With no <parameter>Type</parameter>,
+     <parameter>Icon</parameter> is a file path. This is equivalent to using the
+     <guimenuitem>Set Icon...</guimenuitem> menu item with a dropped icon file.
+     Set <parameter>Type</parameter> to <userinput>name</userinput> to store an
+     icon name. The filer resolves the name through the current icon theme. SOAP
+     does not validate icon names, unlike the <guimenuitem>Set Icon...</guimenuitem>
+     dialog.
    </para></listitem>
 
    <listitem><para><function>UnsetIcon</function>(<parameter>Path</parameter>)

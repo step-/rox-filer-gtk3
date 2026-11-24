@@ -464,6 +464,7 @@ static void panel_scale_factor_changed(GObject *obj,
 	(void) pspec;
 	gtk_widget_get_allocation(panel->window, &alloc);
 	panel_setup_struts(panel, &alloc);
+	gtk_widget_queue_draw(panel->window);
 }
 
 /* 'name' may be NULL or "" to remove the panel */
@@ -1349,6 +1350,7 @@ static gboolean draw_icon(GtkWidget *widget, cairo_t *cr, PanelIcon *pi)
 	int		image_x;
 	int		image_y;
 	GdkPixbuf	*image;
+	MaskedPixmap	*mp;
 	int		text_height = 0;
 	int		req_height;
 	int		scale_factor;
@@ -1386,8 +1388,38 @@ static gboolean draw_icon(GtkWidget *widget, cairo_t *cr, PanelIcon *pi)
 	}
 
 	cairo_set_operator(cr, CAIRO_OPERATOR_OVER);
-	gdk_cairo_set_source_pixbuf(cr, image, image_x, image_y);
-	cairo_paint(cr);
+
+	mp = di_image(icon->item);
+	if (scale_factor > 1 && mp && mp->src_pixbuf)
+	{
+		GdkPixbuf *scaled;
+
+		scaled = gdk_pixbuf_scale_simple(mp->src_pixbuf,
+				width * scale_factor,
+				height * scale_factor,
+				GDK_INTERP_BILINEAR);
+		if (scaled)
+		{
+			cairo_save(cr);
+			cairo_scale(cr, 1.0 / scale_factor, 1.0 / scale_factor);
+			gdk_cairo_set_source_pixbuf(cr, scaled,
+					image_x * scale_factor,
+					image_y * scale_factor);
+			cairo_paint(cr);
+			cairo_restore(cr);
+			g_object_unref(scaled);
+		}
+		else
+		{
+			gdk_cairo_set_source_pixbuf(cr, image, image_x, image_y);
+			cairo_paint(cr);
+		}
+	}
+	else
+	{
+		gdk_cairo_set_source_pixbuf(cr, image, image_x, image_y);
+		cairo_paint(cr);
+	}
 
 	if (icon->item->flags & ITEM_FLAG_SYMLINK)
 	{

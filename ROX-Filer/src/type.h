@@ -66,6 +66,7 @@ GtkIconInfo *theme_lookup_icon(const gchar *icon_name, gint size,
 		GtkIconLookupFlags flags);
 GdkPixbuf *theme_load_icon(const gchar *icon_name, gint size,
 		GtkIconLookupFlags flags, GError **error);
+gchar *theme_resolve_icon_filename(const gchar *icon_name);
 
 #define EXECUTABLE_FILE(item) ((item)->mime_type && (item)->mime_type->executable && \
 				((item)->flags & ITEM_FLAG_EXEC_FILE))

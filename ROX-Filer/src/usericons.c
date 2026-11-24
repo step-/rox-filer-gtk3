@@ -57,11 +57,33 @@
 #define SET_TYPE 1
 #define SET_PATH 0		/* Store in globicons */
 #define SET_COPY 3		/* Create .DirIcon */
+#define SET_THEME 4		/* Store theme icon name in globicons */
 
-static GHashTable *glob_icons = NULL; /* Pathname -> Icon pathname */
+typedef enum
+{
+	GLOBICON_PATH,
+	GLOBICON_THEME
+} GlobIconKind;
+
+typedef struct
+{
+	gchar *value;
+	GlobIconKind kind;
+} GlobIcon;
+
+static GHashTable *glob_icons = NULL; /* Pathname -> GlobIcon */
 
 /* Static prototypes */
 static const char *process_globicons_line(gchar *line);
+static void globicon_set(const gchar *path, const gchar *icon,
+			GlobIconKind kind);
+static void free_globicon_value(GlobIcon *gi);
+static MaskedPixmap *globicon_load(const GlobIcon *gi);
+static gchar *globicon_path(const GlobIcon *gi);
+static gchar *globicon_name(const GlobIcon *gi);
+static void refresh_globicon(const gchar *path);
+static void theme_set_clicked(GtkWidget *button, GObject *dialog);
+static void theme_clear_clicked(GtkWidget *button, GObject *dialog);
 static gboolean free_globicon(gpointer key, gpointer value, gpointer data);
 static void write_globicons(void);
 static void drag_icon_dropped(GtkWidget	*drop_box,
@@ -111,6 +133,9 @@ void read_globicons()
 		for (node = root->xmlChildrenNode; node; node = node->next)
 		{
 			gchar *p, *icon_path;
+			xmlChar *type;
+			GlobIconKind kind = GLOBICON_PATH;
+			GlobIcon *gi;
 
 			if (node->type != XML_ELEMENT_NODE)
 				continue;
@@ -124,8 +149,16 @@ void read_globicons()
 				continue;
 
 			icon_path = (gchar *) xmlNodeGetContent(icon);
+			type = xmlGetProp(icon, BAD_CAST "type");
+			if (type && xmlStrcmp(type, BAD_CAST "theme") == 0)
+				kind = GLOBICON_THEME;
+			if (type)
+				xmlFree(type);
 			p = expand_path(match);
-			g_hash_table_insert(glob_icons, p, icon_path);
+			gi = g_new(GlobIcon, 1);
+			gi->value = icon_path;
+			gi->kind = kind;
+			g_hash_table_insert(glob_icons, p, gi);
 			g_free(match);
 		}
 
@@ -149,21 +182,21 @@ out:
  */
 void check_globicon(const gchar *path, DirItem *item)
 {
-	gchar *gi;
+	GlobIcon *gi;
 
 	g_return_if_fail(item && !item->_image);
 
 	gi = g_hash_table_lookup(glob_icons, path);
 	if (gi)
-		item->_image = g_fscache_lookup(pixmap_cache, gi);
+		item->_image = globicon_load(gi);
 }
 MaskedPixmap *get_globicon(const gchar *path)
 {
-	gchar *gi;
+	GlobIcon *gi;
 
 	gi = g_hash_table_lookup(glob_icons, path);
 	if (gi)
-		return g_fscache_lookup(pixmap_cache, gi);
+		return globicon_load(gi);
 	return NULL;
 }
 
@@ -173,10 +206,67 @@ MaskedPixmap *get_globicon(const gchar *path)
  */
 gchar *get_globicon_path(const gchar *path)
 {
-	gchar *gi;
+	GlobIcon *gi;
 
 	gi = g_hash_table_lookup(glob_icons, path);
-	return gi ? g_strdup(gi) : NULL;
+	return gi ? globicon_path(gi) : NULL;
+}
+
+static void free_globicon_value(GlobIcon *gi)
+{
+	if (!gi)
+		return;
+
+	g_free(gi->value);
+	g_free(gi);
+}
+
+static void globicon_set(const gchar *path, const gchar *icon,
+			GlobIconKind kind)
+{
+	GlobIcon *gi, *old;
+	gchar *key;
+
+	gi = g_new(GlobIcon, 1);
+	gi->value = g_strdup(icon);
+	gi->kind = kind;
+	key = g_strdup(path);
+	old = g_hash_table_lookup(glob_icons, key);
+	g_hash_table_insert(glob_icons, key, gi);
+	free_globicon_value(old);
+}
+
+static MaskedPixmap *globicon_load(const GlobIcon *gi)
+{
+	gchar *filename;
+	MaskedPixmap *pic;
+
+	if (gi->kind != GLOBICON_THEME)
+		return g_fscache_lookup(pixmap_cache, gi->value);
+
+	filename = theme_resolve_icon_filename(gi->value);
+	if (!filename)
+		return NULL;
+
+	pic = g_fscache_lookup(pixmap_cache, filename);
+	g_free(filename);
+	return pic;
+}
+
+static gchar *globicon_path(const GlobIcon *gi)
+{
+	if (gi->kind == GLOBICON_THEME)
+		return theme_resolve_icon_filename(gi->value);
+
+	return g_strdup(gi->value);
+}
+
+static gchar *globicon_name(const GlobIcon *gi)
+{
+	if (gi->kind == GLOBICON_THEME)
+		return g_strdup(gi->value);
+
+	return NULL;
 }
 
 static gboolean create_diricon(const gchar *filepath, const gchar *iconpath)
@@ -231,6 +321,7 @@ static void clear_icon(DropBox *drop_box, GObject *dialog)
 {
 	Radios *radios;
 	const gchar *pathname;
+	gint op;
 
 	pathname = g_object_get_data(G_OBJECT(dialog), "pathname");
 	g_return_if_fail(pathname != NULL);
@@ -238,9 +329,19 @@ static void clear_icon(DropBox *drop_box, GObject *dialog)
 	radios = g_object_get_data(G_OBJECT(dialog), "radios");
 	g_return_if_fail(radios != NULL);
 
-	if (radios_get_value(radios) == SET_PATH)
+	op = radios_get_value(radios);
+	if (op == SET_PATH)
 	{
 		delete_globicon(pathname);
+	}
+	else if (op == SET_THEME)
+	{
+		GtkWidget *entry;
+
+		delete_globicon(pathname);
+		entry = g_object_get_data(G_OBJECT(dialog), "theme-entry");
+		if (entry)
+			gtk_entry_set_text(GTK_ENTRY(entry), "");
 	}
 	else
 	{
@@ -281,7 +382,11 @@ void icon_set_handler_dialog(DirItem *item, const gchar *path)
 	struct stat	info;
 	GtkDialog	*dialog;
 	GtkWidget	*frame, *button;
+	GtkWidget	*common_label, *stack, *theme_frame, *theme_entry;
+	GtkWidget	*vbox, *button_box;
 	Radios		*radios;
+	GlobIcon	*gi;
+	gchar		*text;
 
 	g_return_if_fail(item != NULL && path != NULL);
 
@@ -318,9 +423,16 @@ void icon_set_handler_dialog(DirItem *item, const gchar *path)
 			_("Add the file and image filenames to your "
 			"personal list. The setting will be lost if the image "
 			"or the file is moved."), SET_PATH,
-			_("Only for the file `%s'"), path);
+			_("Only for this file"));
 
-	radios_set_value(radios, SET_PATH);
+	radios_add(radios,
+			_("Look up an icon name in the current icon theme."),
+			SET_THEME,
+			_("Use a theme icon for this file"));
+
+	gi = g_hash_table_lookup(glob_icons, path);
+	radios_set_value(radios,
+			gi && gi->kind == GLOBICON_THEME ? SET_THEME : SET_PATH);
 
 	/* If it's a directory, offer to create a .DirIcon */
 	if (mc_stat(path, &info) == 0 && S_ISDIR(info.st_mode))
@@ -333,22 +445,63 @@ void icon_set_handler_dialog(DirItem *item, const gchar *path)
 			"This is usually the best option if you can write to "
 			"the directory."), SET_COPY,
 			_("Copy image into directory"));
-		if (access(path, W_OK) == 0)
+		if (access(path, W_OK) == 0 && !(gi && gi->kind == GLOBICON_THEME))
 			radios_set_value(radios, SET_COPY);
 	}
 
+	common_label = gtk_label_new(NULL);
+	text = g_strdup_printf(_("Set icon for '%s'"), path);
+	gtk_label_set_text(GTK_LABEL(common_label), text);
+	g_free(text);
+
+	stack = gtk_stack_new();
+	g_object_set_data(G_OBJECT(dialog), "theme-stack", stack);
 
 	frame = drop_box_new(_("Drop an icon file here"));
 	g_object_set_data(G_OBJECT(dialog), "rox-dropbox", frame);
-
-	/* Make sure rox-dropbox is set before packing (calls changed) */
-	radios_pack(radios, GTK_BOX(gtk_dialog_get_content_area(dialog)));
-	gtk_box_pack_start(GTK_BOX(gtk_dialog_get_content_area(dialog)), frame, TRUE, TRUE, 4);
+	gtk_stack_add_named(GTK_STACK(stack), frame, "path");
 
 	g_signal_connect(frame, "path_dropped",
 			G_CALLBACK(drag_icon_dropped), dialog);
 	g_signal_connect(frame, "clear",
 			G_CALLBACK(clear_icon), dialog);
+
+	theme_frame = gtk_frame_new(_("Theme icon name"));
+	gtk_frame_set_shadow_type(GTK_FRAME(theme_frame), GTK_SHADOW_IN);
+	gtk_container_set_border_width(GTK_CONTAINER(theme_frame), 4);
+	vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+	gtk_container_add(GTK_CONTAINER(theme_frame), vbox);
+
+	theme_entry = gtk_entry_new();
+	gtk_box_pack_start(GTK_BOX(vbox), theme_entry, FALSE, TRUE, 4);
+	g_object_set_data(G_OBJECT(dialog), "theme-entry", theme_entry);
+
+	button_box = gtk_button_box_new(GTK_ORIENTATION_HORIZONTAL);
+	gtk_box_pack_start(GTK_BOX(vbox), button_box, FALSE, TRUE, 0);
+
+	button = button_new_mixed("edit-clear", _("_Clear"));
+	gtk_box_pack_start(GTK_BOX(button_box), button, FALSE, TRUE, 0);
+	g_signal_connect(button, "clicked",
+			G_CALLBACK(theme_clear_clicked), dialog);
+
+	button = button_new_mixed("gtk-ok", _("_Set"));
+	gtk_widget_set_tooltip_text(button,
+			_("Look up this icon name in the current theme and use "
+			  "the resulting icon for this file"));
+	gtk_box_pack_start(GTK_BOX(button_box), button, FALSE, TRUE, 0);
+	g_signal_connect(button, "clicked",
+			G_CALLBACK(theme_set_clicked), dialog);
+	g_signal_connect(theme_entry, "activate",
+			G_CALLBACK(theme_set_clicked), dialog);
+
+	gtk_stack_add_named(GTK_STACK(stack), theme_frame, "theme");
+
+	/* Make sure the dialog data is set before packing (calls changed) */
+	radios_pack(radios, GTK_BOX(gtk_dialog_get_content_area(dialog)));
+	gtk_box_pack_start(GTK_BOX(gtk_dialog_get_content_area(dialog)),
+			common_label, FALSE, TRUE, 4);
+	gtk_box_pack_start(GTK_BOX(gtk_dialog_get_content_area(dialog)),
+			stack, TRUE, TRUE, 4);
 
 	button = button_new_mixed("window-close", _("_Close"));
 	gtk_widget_set_can_default(button, TRUE);
@@ -361,6 +514,7 @@ void icon_set_handler_dialog(DirItem *item, const gchar *path)
 	g_signal_connect(dialog, "destroy",
 			G_CALLBACK(one_less_window), NULL);
 	gtk_widget_show_all(GTK_WIDGET(dialog));
+	radios_changed(radios, dialog);
 }
 
 
@@ -374,17 +528,24 @@ static void radios_changed(Radios *radios, gpointer data)
 {
 	GObject *dialog = G_OBJECT(data);
 	DropBox *drop_box;
+	GtkWidget *stack, *entry;
 	const gchar *path;
 	MIME_type *mime_type;
 
 	path = g_object_get_data(dialog, "pathname");
 	drop_box = g_object_get_data(dialog, "rox-dropbox");
 	mime_type = g_object_get_data(dialog, "mime-type");
+	stack = g_object_get_data(dialog, "theme-stack");
+	entry = g_object_get_data(dialog, "theme-entry");
 
 	g_return_if_fail(radios != NULL);
 	g_return_if_fail(path != NULL);
 	g_return_if_fail(drop_box != NULL);
 	g_return_if_fail(mime_type != NULL);
+	g_return_if_fail(stack != NULL);
+	g_return_if_fail(entry != NULL);
+
+	gtk_stack_set_visible_child_name(GTK_STACK(stack), "path");
 
 	switch (radios_get_value(radios))
 	{
@@ -415,9 +576,26 @@ static void radios_changed(Radios *radios, gpointer data)
 		}
 		case SET_PATH:
 		{
-			const char	*gi;
+			GlobIcon *gi;
+			gchar *icon_path;
+
 			gi = g_hash_table_lookup(glob_icons, path);
-			drop_box_set_path(drop_box, gi);
+			icon_path = gi ? globicon_path(gi) : NULL;
+			drop_box_set_path(drop_box, icon_path);
+			g_free(icon_path);
+			break;
+		}
+		case SET_THEME:
+		{
+			GlobIcon *gi;
+			gchar *icon_name;
+
+			gi = g_hash_table_lookup(glob_icons, path);
+			icon_name = gi ? globicon_name(gi) : NULL;
+			gtk_entry_set_text(GTK_ENTRY(entry),
+					icon_name ? icon_name : "");
+			g_free(icon_name);
+			gtk_stack_set_visible_child_name(GTK_STACK(stack), "theme");
 			break;
 		}
 		case SET_COPY:
@@ -439,19 +617,23 @@ static void radios_changed(Radios *radios, gpointer data)
 static gboolean free_globicon(gpointer key, gpointer value, gpointer data)
 {
 	g_free(key);
-	g_free(value);
+	free_globicon_value(value);
 
 	return TRUE;		/* For g_hash_table_foreach_remove() */
 }
 
 static void write_globicon(gpointer key, gpointer value, gpointer data)
 {
+	GlobIcon *gi = (GlobIcon *) value;
 	xmlNodePtr doc = (xmlNodePtr) data;
-	xmlNodePtr tree;
+	xmlNodePtr tree, icon;
 
 	tree = xmlNewTextChild(doc, NULL, BAD_CAST "rule", NULL);
 	xmlSetProp(tree, BAD_CAST "match", (const xmlChar *) key);
-	xmlNewTextChild(tree, NULL, BAD_CAST "icon", (const xmlChar *) value);
+	icon = xmlNewTextChild(tree, NULL, BAD_CAST "icon",
+			(const xmlChar *) gi->value);
+	if (gi->kind == GLOBICON_THEME)
+		xmlSetProp(icon, BAD_CAST "type", BAD_CAST "theme");
 }
 
 /* Write globicons file */
@@ -507,7 +689,7 @@ static const char *process_globicons_line(gchar *line)
 	g_return_val_if_fail(iconpath != NULL,
 			"Invalid line in globicons: no icon specified");
 
-	g_hash_table_insert(glob_icons, g_strdup(pattern), g_strdup(iconpath));
+	globicon_set(pattern, iconpath, GLOBICON_PATH);
 
 	return NULL;
 }
@@ -517,23 +699,91 @@ static const char *process_globicons_line(gchar *line)
  * added to the top of the list (so that it takes precedence over
  * other entries).
  */
-void add_globicon(const gchar *path, const gchar *icon)
+static void refresh_globicon(const gchar *path)
 {
 	gchar *dp;
-	g_hash_table_insert(glob_icons, g_strdup(path), g_strdup(icon));
 
-	/* Rewrite the globicons file */
 	write_globicons();
 
-	/* Make sure any visible icons for the file are updated */
 	dp = pathdup(path);
 	if (strcmp(dp, path) == 0)
 		examine(path);
 	else
-		/* only chenged an icon on sym path doesn't tell */
 		dir_force_update_path(path, TRUE);
 
 	g_free(dp);
+}
+
+void add_globicon(const gchar *path, const gchar *icon)
+{
+	globicon_set(path, icon, GLOBICON_PATH);
+	refresh_globicon(path);
+}
+
+void add_named_globicon(const gchar *path, const gchar *icon)
+{
+	globicon_set(path, icon, GLOBICON_THEME);
+	refresh_globicon(path);
+}
+
+static void theme_set_clicked(GtkWidget *button, GObject *dialog)
+{
+	GtkWidget *entry;
+	const gchar *pathname;
+	gchar *name, *filename;
+
+	(void) button;
+
+	pathname = g_object_get_data(dialog, "pathname");
+	entry = g_object_get_data(dialog, "theme-entry");
+	g_return_if_fail(pathname != NULL);
+	g_return_if_fail(entry != NULL);
+
+	name = g_strdup(gtk_entry_get_text(GTK_ENTRY(entry)));
+	g_strstrip(name);
+
+	if (*name == '\0')
+	{
+		delayed_error(_("Enter an icon name. The icon has not been "
+				"changed."));
+		g_free(name);
+		return;
+	}
+
+	filename = theme_resolve_icon_filename(name);
+	if (!filename)
+	{
+		delayed_error(_("The icon theme does not contain an icon "
+				"named '%s'. The icon has not been changed."),
+				name);
+		g_free(name);
+		return;
+	}
+	g_free(filename);
+
+	globicon_set(pathname, name, GLOBICON_THEME);
+	refresh_globicon(pathname);
+	g_free(name);
+
+	destroy_on_idle(GTK_WIDGET(dialog));
+}
+
+static void theme_clear_clicked(GtkWidget *button, GObject *dialog)
+{
+	GtkWidget *entry;
+	const gchar *pathname;
+
+	(void) button;
+
+	pathname = g_object_get_data(dialog, "pathname");
+	entry = g_object_get_data(dialog, "theme-entry");
+	g_return_if_fail(pathname != NULL);
+	g_return_if_fail(entry != NULL);
+
+	delete_globicon(pathname);
+	gtk_entry_set_text(GTK_ENTRY(entry), "");
+	full_refresh();
+	radios_changed(g_object_get_data(dialog, "radios"), dialog);
 }
 
 /* Remove the globicon for a certain path */
@@ -548,7 +798,7 @@ void delete_globicon(const gchar *path)
 	g_hash_table_remove(glob_icons, path);
 
 	g_free(key);
-	g_free(value);
+	free_globicon_value((GlobIcon *) value);
 
 	write_globicons();
 

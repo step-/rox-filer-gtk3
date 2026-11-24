@@ -1207,6 +1207,8 @@ static GtkWidget *add_button(GtkWidget *bar, Tool *tool,
 	else
 	{
 		tool_item = gtk_toggle_tool_button_new();
+		gtk_tool_button_set_label(GTK_TOOL_BUTTON(tool_item),
+				_(tool->label));
 		gtk_tool_button_set_icon_widget(GTK_TOOL_BUTTON(tool_item),
 				icon_widget);
 	}

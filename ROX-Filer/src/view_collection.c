@@ -202,7 +202,7 @@ GType view_collection_get_type(void)
 
 	if (!type)
 	{
-		static const GTypeInfo info =
+		 GTypeInfo info =
 		{
 			sizeof (ViewCollectionClass),
 			NULL,			/* base_init */
@@ -214,7 +214,7 @@ GType view_collection_get_type(void)
 			0,			/* n_preallocs */
 			view_collection_init
 		};
-		static const GInterfaceInfo iface_info =
+		 GInterfaceInfo iface_info =
 		{
 			view_collection_iface_init, NULL, NULL
 		};
@@ -341,8 +341,8 @@ static gboolean transparent_draw(GtkWidget *widget,
 		if (view->collection->number_of_items == 0 &&
 				!view->filer_window->first_scan)
 		{
-			//static const int size = ICON_HEIGHT / 2;
-			static const int size = ICON_HEIGHT / 3 + 1;
+
+			int size = ICON_HEIGHT / 3 + 1;
 
 			cairo_surface_t *cs = cairo_image_surface_create(
 					CAIRO_FORMAT_ARGB32, size, size);
@@ -363,9 +363,9 @@ static gboolean transparent_draw(GtkWidget *widget,
 			//cairo_rectangle(scr, size / 2, size / 2, size / 2, size / 2);
 			//cairo_fill(scr);
 			cairo_set_line_width(scr, 0.4);
-			static const double center = size * 2/3;
-			static const double edge = size / 6;
-			static const double end = size;
+			 double center = size * 2/3;
+			 double edge = size / 6;
+			 double end = size;
 			cairo_move_to(scr, center, center);
 			cairo_line_to(scr, 0     , edge  );
 			cairo_move_to(scr, center, center);
@@ -1391,7 +1391,7 @@ static gfloat calc_size(FilerWindow *fw, CollectionItem *colitem,
 	gboolean max_h = FALSE;
 	gboolean max_w = FALSE;
 
-	static const int MARGIN = 2;
+	 int MARGIN = 2;
 
 	int nw = view->name_width;
 
